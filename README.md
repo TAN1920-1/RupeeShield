@@ -1,350 +1,1157 @@
-# 🚨 Real-Time Fraud & Anomaly Detection System
+# RupeeShield — AI-Powered Financial Cybersecurity Simulation Platform
 
-[![CI](https://github.com/NishchayAzad/Real-Time-Fraud-Detection-Anomaly-Intelligence-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/NishchayAzad/Real-Time-Fraud-Detection-Anomaly-Intelligence-Platform/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.12-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-real--time%20API-009688)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+## 1. Project title and overview.
 
-A hybrid **supervised + unsupervised** fraud scoring engine, served in real time via FastAPI,
-with stateful causal feature engineering, SHAP explainability, and a live monitoring dashboard.
+RupeeShield is an educational financial-cybersecurity cyber range. It runs a
+**simulated bank** entirely on this machine: a transaction ledger, synthetic
+accounts with balances, authentication and device telemetry, and four scripted
+attack scenarios. A hybrid detection pipeline scores the resulting traffic, a
+separate correlation component relates transactions to security events, a
+financial-impact engine estimates what a simulated attack cost and what a defense
+saved, and a comparison laboratory runs the same scenario under three defense
+strategies.
 
-Built on a **self-generated, multi-channel synthetic transaction dataset** — every column and
-every fraud pattern is something I designed and can explain, rather than an anonymized
-Kaggle CSV with columns like `V1...V28`.
+The project is built as a real, working application rather than a UI prototype:
 
-**🟢 Live demo:** [API docs](https://real-time-fraud-detection-anomaly.onrender.com/docs) ·
-[Live dashboard](https://real-time-fraud-detection-anomaly-intelligence-platform-krtus8.streamlit.app/)
-— free-tier hosting, so the API may take 30–60s to wake up on the first request. In the
-dashboard, click **Start** to begin streaming simulated transactions through the live model.
+- A **FastAPI** backend exposes a documented HTTP API under `/api` plus the
+  original direct-scoring endpoint at `POST /score`.
+- A **React + TypeScript** dashboard consumes that API across nine navigation
+  areas, from an Overview of live statistics to a Defense Comparison Lab.
+- Both halves run locally with no paid service, no API key and no external data.
+  The ML dataset is generated on this machine from a seed.
 
----
+Everything the platform processes is synthetic. It never connects to a real bank,
+payment network or third-party system, and it makes no real payments.
 
-## Why this project is different from a typical "fraud detection" portfolio project
+- Backend entry point: `app/main.py`
+- Frontend entry point: `frontend/src/main.tsx` (shell in `frontend/src/App.tsx`)
+- In-app documentation payload (served at `GET /api/docs`): `app/services/documentation.py`
 
-Most fraud detection projects on GitHub are a single classifier (usually XGBoost or a random
-forest) trained on a public Kaggle dataset, evaluated offline with a precision/recall table.
-That's a modeling exercise, not a fraud **system**. This project is built around the three
-things that actually separate a real fraud engine from a notebook:
+## 2. Problem statement.
 
-| Gap in typical projects | What this project does instead |
-|---|---|
-| Anonymized dataset (`V1..V28`) you can't explain | Self-written synthetic data generator with 4 named fraud typologies you can describe end-to-end |
-| One supervised model, blind to novel fraud | **Hybrid** supervised (XGBoost) + unsupervised (Isolation Forest) scoring — the second model exists specifically to catch fraud patterns that don't resemble any label |
-| Features computed by scanning a CSV/DB at request time (leaks the future, too slow) | **Causal, O(1) stateful feature engineering** — every feature uses only what happened *before* the current transaction, computed with the exact same code path offline (training) and online (serving) |
-| "Here's my F1 score" and nothing else | A hybrid **rule + ML risk engine** with human-readable reason codes and per-transaction **SHAP** explanations — the auditability a real fraud/compliance team needs |
-| A trained model in a notebook, no serving story | A running **FastAPI** service, an **async streaming simulator**, and a **live Streamlit dashboard** — the full loop from transaction to alert |
+Fraud detection is usually taught as a single classifier evaluated offline on a
+public CSV. That leaves out the parts that decide whether a real fraud system
+works: how transaction behaviour is correlated with authentication and device
+telemetry, how a defense trades missed fraud against interrupted legitimate
+business, what an incident actually cost, and whether an extra detection layer
+pays for itself once its false positives are priced in.
 
----
+Those questions need a controlled environment where the ground truth is known,
+the attack is reproducible, and the defensive choices can be compared on identical
+inputs. RupeeShield provides that environment: a deterministic simulator that
+generates a scripted attack, a detection pipeline that scores it exactly the way a
+live transaction would be scored, and an impact model that separates value that
+moved from value that did not.
 
-## Architecture
+The core question the platform exists to investigate is stated in section 4 and is
+treated as a question, not as a proven result.
+
+## 3. Objectives.
+
+- Simulate a virtual bank and run controlled, local, deterministic attack
+  scenarios against it.
+- Implement a machine-learning detection pipeline with a reproducible data path and
+  a causal feature-engineering step shared between training and serving.
+- Implement security-event correlation as a separate, independently testable
+  component, so its additional contribution can be measured rather than asserted.
+- Quantify the simulated financial impact of a scenario and of a defense using
+  currency-safe arithmetic, with every assumption documented.
+- Compare three defense configurations on identical scenario inputs and report
+  whichever one actually measured best, including cases where the extra detection
+  performed worse.
+- Provide an incident investigation and read-only replay workflow that never mutates
+  the original records.
+- Keep the whole project free, local and self-contained, and document its
+  limitations honestly.
+
+## 4. Key features.
+
+- **Four scripted attack scenarios:** account takeover, credential stuffing,
+  payment manipulation and suspicious transfer activity
+  (`app/services/simulation/catalog.py`).
+- **Deterministic simulation.** A scenario, a seed and an event count produce an
+  identical script; each run stores a SHA-256 fingerprint so two runs can be proven
+  to have received the same inputs (`app/services/simulation/scenarios.py`).
+- **Hybrid detection engine** blending a supervised model, an unsupervised anomaly
+  detector and auditable rules, with plain-language reasons for every decision
+  (`app/ml/risk_engine.py`).
+- **Causal, stateful feature engineering.** One `UserStateStore` computes the same
+  15 features offline and online, so there is no train/serve skew
+  (`app/ml/features.py`).
+- **Eight security-event correlation rules** with configurable thresholds, evidence
+  tracking and duplicate-alert suppression (`app/services/correlation.py`).
+- **Server-Sent Events live monitoring** fed by persisted rows, not by frontend
+  randomness (`app/api/routes/monitoring.py`).
+- **Financial-network graph** of accounts and transfers, with risk labels
+  (`app/services/network.py`).
+- **Incident investigation and read-only replay** that recomputes decisions and
+  reports divergence without editing history (`app/api/routes/incidents.py`).
+- **Defense Comparison Lab** running `NONE`, `RULE_BASED` and `COMBINED` on one
+  scenario script (`app/services/defense_lab.py`).
+- **ML model evaluation** with stored metrics, confusion matrices, PR curves,
+  feature importance and live inference latency (`app/services/ml_service.py`).
+- **Financial-impact engine** using integer paise and `Decimal`, with documented
+  formulas and assumptions (`app/services/financial_impact.py`).
+- **Audit logging and validation** on the boundary; a sliding-window rate limiter on
+  every `/api` route (`app/security/audit.py`, `app/security/validation.py`,
+  `app/security/ratelimit.py`).
+
+### Attack scenarios
+
+All four scenarios are defined as data in `app/services/simulation/catalog.py` and
+scripted by `app/services/simulation/scenarios.py`.
+
+| Key | Name | Risk level | Default events | Objective |
+|---|---|---|---|---|
+| `ACCOUNT_TAKEOVER` | Account takeover | HIGH | 40 | Move value out of a hijacked account before anyone notices |
+| `CREDENTIAL_STUFFING` | Credential stuffing | HIGH | 60 | Find working credentials at scale and cash out quickly |
+| `PAYMENT_MANIPULATION` | Payment manipulation | MEDIUM | 30 | Redirect a legitimate payment without changing the total |
+| `SUSPICIOUS_TRANSFER` | Suspicious transfer activity | MEDIUM | 35 | Obscure the origin of funds by fanning them out |
+
+### The research question under study
+
+> Does combining transaction anomaly detection with security-event correlation
+> reduce simulated financial losses compared with transaction-only detection?
+
+The platform is built to investigate this question, not to assert an answer. The
+Defense Comparison Lab runs one scenario script under three configurations and
+reports the measured net simulated impact. The comparison reports whichever
+configuration actually measured best and explains cases where the combined
+approach performed worse. A single scenario and seed is one data point; several
+seeds are needed before any difference can be read as a general result. The
+hypothesis is **not** treated as proven.
+
+## 5. Scope and safety limitations.
+
+RupeeShield is a simulation and must never be presented as a production-grade
+banking security system.
+
+- It contains no offensive capability. It cannot attack, scan, probe or degrade any
+  external system, and it targets nothing outside its own local database.
+- Every "attack" is a locally generated scenario script executed against a
+  synthetic bank inside the same process.
+- All accounts, transactions, devices, merchants and security events are synthetic.
+  No real personal or financial data is stored, processed or displayed.
+- Accounts are never described as criminal. The strongest labels used anywhere are
+  **"flagged for investigation"** and **"elevated simulated risk"**.
+- Ground-truth fraud labels come from the scenario generator, so every precision and
+  recall figure is a measurement against a known answer, not a claim about
+  real-world performance.
+- The application has no authentication, no multi-tenant isolation and no hardened
+  deployment. The in-memory feature store is per-process and is not shared between
+  replicas (`app/api/routes/score.py`).
+- All financial figures are modelled estimates from a synthetic scenario, not audited
+  financial statements.
+
+## 6. Technology stack and reasons for choosing it.
+
+| Layer | Choice | Why |
+|---|---|---|
+| Backend | Python 3.12, FastAPI 0.115.6, Uvicorn 0.34.0 | Async HTTP, automatic OpenAPI docs, and Pydantic validation at the boundary |
+| Configuration | Pydantic v2 `BaseSettings` / pydantic-settings | Typed configuration, environment-variable overrides, no secrets in source |
+| Database | SQLite via SQLAlchemy 2.x | No server, no credentials, no cost; a single file keeps the project self-contained |
+| ML | scikit-learn 1.7.2, XGBoost 2.0.3 | A supervised classifier for known typologies plus an unsupervised detector for novel ones |
+| Explainability | SHAP (optional) | Per-transaction feature contributions; absent without breaking scoring |
+| Data | pandas 2.3.3, NumPy | Schema validation, temporal splitting and reproducible generation |
+| Frontend | React 18.3 + TypeScript 5.6 (strict) + Vite 5 | Type-safe SPA with a fast dev server and a built-in dev proxy |
+| Charts | Recharts 2.12 | React-native charting for the dashboards |
+| Graph | Cytoscape 3.30 | Purpose-built graph rendering for the financial network |
+| Frontend tests | Vitest 2.1 + jsdom + Testing Library | The Vite-native test runner, so one toolchain for build and test |
+| Backend tests | pytest 8.3 + httpx | Standard Python testing with an in-process `TestClient` |
+| CI | GitHub Actions | Free for public repositories; runs backend and frontend jobs |
+
+Every dependency is free and open source, and the whole stack runs locally with no
+external service or API key. The pinned versions are listed in `requirements.txt`
+and `frontend/package.json`.
+
+## 7. Architecture diagram using Mermaid.
 
 ```mermaid
-flowchart TD
-    A["Transaction Stream<br/>(streaming/simulator.py — async, real-time)<br/>stand-in for a Kafka consumer in production"] -->|"HTTP POST /score"| B
-
-    subgraph API["FastAPI service — app/main.py"]
-        direction TB
-        B["1. UserStateStore<br/>O(1) causal feature lookup/update<br/>(velocity, recency, deviation, device/geo history)"] --> C["2. XGBoost<br/>known fraud typologies"]
-        C --> D["3. Isolation Forest<br/>novel / zero-day anomalies"]
-        D --> E["4. Rule heuristics<br/>auditable guardrails"]
-        E --> F["5. SHAP explainer<br/>per-transaction reason codes"]
+flowchart TB
+    subgraph Browser["Browser - React + TypeScript dashboard (frontend/, Vite, port 5173)"]
+        NAV["Nine navigation areas"]
+        CLIENT["api/client.ts + hooks"]
+        SSE["EventSource / SSE client"]
     end
 
-    F --> G[("SQLite / session state<br/>live_scores")]
-    G --> H["Streamlit dashboard<br/>dashboard/app.py<br/>live alert feed, risk trend, decision breakdown"]
+    subgraph API["FastAPI service - app/main.py (uvicorn, port 8000)"]
+        MW["CORS middleware + exception handlers + sliding-window rate limit"]
+        ROUTES["14 route modules under /api plus POST /score at the root"]
+    end
 
-    style A fill:#1e2530,stroke:#4bb8ff,color:#e6e6e6
-    style API fill:#12151c,stroke:#3a3f4b,color:#e6e6e6
-    style B fill:#1e2530,stroke:#4bff9f,color:#e6e6e6
-    style C fill:#1e2530,stroke:#4bff9f,color:#e6e6e6
-    style D fill:#1e2530,stroke:#4bff9f,color:#e6e6e6
-    style E fill:#1e2530,stroke:#4bff9f,color:#e6e6e6
-    style F fill:#1e2530,stroke:#4bff9f,color:#e6e6e6
-    style G fill:#1e2530,stroke:#ffd24b,color:#e6e6e6
-    style H fill:#1e2530,stroke:#ff4b6e,color:#e6e6e6
+    subgraph Services["Business logic - app/services/"]
+        SIM["simulation_runner + simulation/ (catalog, scenarios, engine, accounts)"]
+        DET["detection.py - defense configurations"]
+        CORR["correlation.py - eight rules"]
+        FI["financial_impact.py - paise arithmetic"]
+        LAB["defense_lab.py"]
+        SUPPORT["monitoring, network, overview, incidents, ml_service, settings_service, documentation"]
+    end
+
+    subgraph ML["ML - app/ml/"]
+        FEAT["features.py - UserStateStore, 15 causal features"]
+        RISK["risk_engine.py - hybrid blend + rule heuristics"]
+        PRED["predict.py"]
+        TRAIN["train.py - XGBoost + Isolation Forest"]
+        STORE["model_store.py"]
+    end
+
+    subgraph Data["Persistence and artefacts"]
+        DB[("SQLite - rupeeshield.db via SQLAlchemy 2.x")]
+        ART[("models/ - xgb_model.joblib, iso_forest.joblib, feature_order.json, anomaly_calibration.json, metrics.json")]
+    end
+
+    Browser <-->|"HTTP /api/* and SSE; POST /score"| API
+    ROUTES --> Services
+    DET --> RISK
+    DET --> CORR
+    RISK --> PRED
+    PRED --> FEAT
+    PRED --> STORE
+    STORE --> ART
+    TRAIN --> STORE
+    SIM --> DET
+    SIM --> FI
+    LAB --> SIM
+    Services --> DB
 ```
 
-### Request lifecycle (what happens on every `/score` call)
+Request routing is intentionally thin. `app/api/__init__.py` mounts one aggregate
+router at `/api` with the rate limiter applied once; `app/main.py` mounts the
+scoring router at the root. Business logic lives in `app/services/`, persistence in
+`app/db/`, and ML training is separate from inference (`app/ml/train.py` versus
+`app/ml/predict.py`).
+
+## 8. Repository directory structure.
+
+```text
+Real-Time-Fraud-Detection-Anomaly-Intelligence-Platform/
+├── app/                          # FastAPI backend
+│   ├── api/
+│   │   ├── routes/               # 14 route modules + score.py (see section 7)
+│   │   ├── deps.py               # SessionDep, client_host, enforce_rate_limit
+│   │   ├── errors.py             # 422 / 404 / 409 exception mapping
+│   │   └── __init__.py           # aggregate /api router
+│   ├── core/                     # config.py (settings), logging.py
+│   ├── db/
+│   │   ├── models.py             # 13 tables (runs, accounts, transactions, ...)
+│   │   ├── session.py            # engine + init_db
+│   │   └── repositories/         # query helpers
+│   ├── ml/
+│   │   ├── dataset.py            # schema validation + provenance
+│   │   ├── synthetic_data.py     # seeded dataset generator
+│   │   ├── features.py           # causal UserStateStore + FEATURE_ORDER
+│   │   ├── preprocessing.py      # feature table, cleaning, temporal split
+│   │   ├── risk_engine.py        # hybrid blend + rule heuristics
+│   │   ├── train.py              # XGBoost + Isolation Forest + calibration
+│   │   ├── predict.py            # serving-side predictor
+│   │   ├── evaluate.py           # metrics, PR curves, importance, latency
+│   │   └── model_store.py        # artefact load/save
+│   ├── schemas/                  # Pydantic request/response models
+│   ├── security/                 # validation.py, ratelimit.py, audit.py
+│   ├── services/
+│   │   ├── simulation/           # accounts.py, catalog.py, scenarios.py, engine.py
+│   │   ├── correlation.py        # eight correlation rules
+│   │   ├── defense_lab.py        # three-configuration comparison
+│   │   ├── detection.py          # maps a configuration onto scoring
+│   │   ├── financial_impact.py   # impact formulas (paise)
+│   │   ├── incidents.py          # incident detail + replay
+│   │   ├── monitoring.py         # event feed + SSE
+│   │   ├── network.py            # graph construction
+│   │   ├── overview.py           # overview statistics
+│   │   ├── ml_service.py         # model info / evaluation
+│   │   ├── settings_service.py   # threshold overrides
+│   │   ├── simulation_runner.py  # run lifecycle
+│   │   └── documentation.py      # in-app documentation payload
+│   ├── utils/                    # money.py, timeutils.py, ids.py
+│   └── main.py                   # FastAPI app
+├── frontend/                     # React + TypeScript dashboard (Vite)
+│   ├── src/
+│   │   ├── api/                  # client.ts, types.ts
+│   │   ├── components/           # ui.tsx, charts.tsx, NetworkGraphView.tsx
+│   │   ├── hooks/                # useApiResource.ts
+│   │   ├── lib/                  # format.ts
+│   │   ├── pages/                # nine page components
+│   │   ├── styles/               # theme.css
+│   │   ├── App.tsx               # sidebar + routes
+│   │   └── main.tsx
+│   ├── package.json
+│   └── vite.config.ts
+├── models/                       # trained artefacts (checked in)
+├── scripts/
+│   └── generate_dataset.py       # synthetic dataset CLI
+├── tests/                        # pytest suite (services, API, ML, money)
+├── .github/workflows/ci.yml      # backend + frontend CI
+├── .env.example                  # documented environment variables
+├── Dockerfile                    # single-service API image
+├── docker-compose.yml            # local compose stack (API only)
+├── requirements.txt
+└── LICENSE
+```
+
+## 9. Data flow and system workflow.
+
+The sequence below is the full path a simulation takes, from the browser request to
+the persisted impact figures and the live feed.
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
-    participant API as FastAPI
-    participant S as UserStateStore
-    participant X as XGBoost
-    participant I as Isolation Forest
-    participant R as Rule Engine
-    participant SH as SHAP Explainer
+    autonumber
+    participant U as Dashboard (browser)
+    participant API as FastAPI (/api)
+    participant RUN as simulation_runner
+    participant PLAN as scenarios.build_plan
+    participant ENG as simulation.engine
+    participant DET as detection.py
+    participant RISK as risk_engine + predict
+    participant CORR as correlation.py
+    participant FI as financial_impact.py
+    participant DB as SQLite
 
-    C->>API: POST /score {user_id, amount, channel, country, ...}
-    API->>S: compute_features(user_id, amount, ts, ...)
-    Note over S: Reads prior state ONLY (causal),<br/>then updates state with this txn
-    S-->>API: feature vector (15 features)
-    API->>X: predict_proba(features)
-    X-->>API: ml_supervised_score
-    API->>I: decision_function(features)
-    I-->>API: ml_anomaly_score (calibrated)
-    API->>R: rule_heuristic_score(features)
-    R-->>API: rule_score + reasons
-    API->>API: blend scores → fraud_risk_score → decision
-    API->>SH: shap_values(features)
-    SH-->>API: top contributing features
-    API-->>C: {fraud_risk_score, decision, reasons, top_shap_features, latency_ms}
+    U->>API: POST /api/simulation/runs (scenario, seed, n_events, defense_config, mode)
+    API->>RUN: create_run(...)
+    RUN->>PLAN: build_plan(scenario, seed, n_events)
+    PLAN-->>RUN: accounts, transactions, security events, SHA-256 fingerprint
+    RUN->>DB: persist run + fresh account roster
+    RUN->>ENG: replay the plan
+    loop Chronological queue (security events before transactions at equal offset)
+        ENG->>DET: evaluate_transaction(features, defense_config, correlation)
+        DET->>RISK: score features (rule / ML hybrid)
+        RISK-->>DET: blended risk score + reasons
+        DET->>CORR: correlate(transaction, security events)
+        CORR-->>DET: correlation score + rules + evidence
+        DET-->>ENG: decision (ALLOW / FLAG / BLOCK) + response status
+        ENG->>DB: ledger rows, security events, detections, incidents
+    end
+    ENG->>FI: compute_impact(exposure, unauthorized, prevented, interrupted, incidents)
+    FI-->>ENG: impact breakdown (paise)
+    ENG->>DB: run summary + per-incident impact
+    U->>API: GET /api/monitoring/stream (Server-Sent Events)
+    API->>DB: read persisted rows
+    API-->>U: live events as they are written
 ```
 
----
+Two decisions shape this flow:
 
-## Results (real output from this project's own code)
+- **The plan is separate from the run.** `build_plan` depends only on
+  `(scenario, seed, n_events)` and contains no run identifier, database row or
+  defense setting. That is what lets the Defense Comparison Lab replay one script
+  under three defenses and attribute any difference to the defense alone.
+- **Correlation never lowers risk.** It is an additive boost applied on top of the
+  transaction score, clamped to 1.0, so it can push a borderline transaction over a
+  threshold but can never mark something as safe.
 
-<p align="center">
-  <img src="docs/images/model_performance.png" width="90%" alt="XGBoost precision-recall and ROC curves">
-</p>
+### Detection pipeline
 
-| Model | PR-AUC | ROC-AUC |
+The hybrid risk engine (`app/ml/risk_engine.py`) blends three independent signals,
+each covering a different failure mode:
+
+```text
+final_risk = 0.55 x ml_supervised    # XGBoost: known fraud typologies
+           + 0.25 x ml_anomaly       # Isolation Forest: novel patterns
+           + 0.20 x rule_heuristic   # auditable guardrails
+```
+
+When the ML components are unavailable (`RULE_BASED`), the rule score *is* the risk
+score and the ML components are reported as `null` rather than fabricated
+(`combine_scores`, `score_transaction`).
+
+The rule heuristics add fixed increments, clamped to 1.0:
+
+| Rule id | Adds | Fires when |
 |---|---|---|
-| XGBoost (supervised) | 0.999 | 1.000 |
-| Isolation Forest (unsupervised, as anomaly ranker) | 0.881 | — |
+| `R-HIGH-VELOCITY-10MIN` | 0.35 | `txns_last_10min` reaches the 10-minute velocity threshold |
+| `R-HIGH-VELOCITY-1H` | 0.20 | `txns_last_1h` reaches the 1-hour threshold (else-branch of the above) |
+| `R-RAPID-REPEAT` | 0.15 | Under 0.5 minutes since the previous transaction and more than one in 10 minutes |
+| `R-AMOUNT-OUTLIER` | 0.30 | `amount_zscore` above the z-score threshold |
+| `R-AMOUNT-MULTIPLE-OF-AVG` | 0.15 | `amount_over_user_avg` above the multiple-of-average threshold |
+| `R-NEW-DEVICE-AND-COUNTRY` | 0.30 | Both a new device and a new country |
+| `R-NEW-COUNTRY` | 0.15 | New country only |
+| `R-NEW-DEVICE` | 0.10 | New device only |
+| `R-LATE-NIGHT-LARGE` | 0.10 | Late-night transaction with amount above twice the account average |
 
-The supervised model performs near-perfectly *on the fraud patterns it was trained on* —
-expected, since the synthetic typologies have a clear behavioral signature. The honest
-interview talking point is the isolation forest number: it recovers ~88% of fraud **using
-no labels at all**, which is the actual point of the hybrid design — it's the layer that
-would still catch a fifth, never-labeled fraud typology that XGBoost has never seen.
+### Decision classes and thresholds
 
-<p align="center">
-  <img src="docs/images/feature_importance.png" width="60%" alt="XGBoost feature importance">
-</p>
+`decide()` maps the final risk score to one of three classes, and each class maps to
+a ledger/response status (`app/services/detection.py`, `RESPONSE_BY_DECISION`):
 
-`time_since_prev_txn_min` and `is_new_device` dominate — which lines up exactly with the
-two fraud typologies built for rapid detection (card testing = near-zero time between
-transactions, account takeover = a brand-new device). That kind of alignment between what
-the model actually learned and the typologies it was trained on is the thing to point out
-in an interview.
+| Class | Condition | Response status |
+|---|---|---|
+| `BLOCK` | score >= `block_threshold` (0.80) | `BLOCKED` |
+| `FLAG` | score >= `flag_threshold` (0.45) and below block | `PENDING_REVIEW` |
+| `ALLOW` | below the flag threshold | `SETTLED` |
 
-<p align="center">
-  <img src="docs/images/live_monitor_snapshot.png" width="90%" alt="Live-scored transaction stream showing fraud escalation">
-</p>
+### Feature engineering
 
-A simulated live stream, scored transaction-by-transaction through the real pipeline: normal
-traffic clusters near zero risk, fraud bursts climb from FLAG into BLOCK as the system
-accumulates evidence (velocity, new device, anomalous amount) within the burst — this
-escalation behavior, not just a final score, is what the stateful design buys you.
+Fifteen causal features are computed by a single `UserStateStore`
+(`app/ml/features.py`, `FEATURE_ORDER`), read-then-update so a transaction never
+sees itself. Rolling amount statistics use Welford's online algorithm.
 
-*(Regenerate these from scratch anytime with `python docs/generate_readme_charts.py` — every
-number in them comes from actually running this project's code, not a mockup.)*
+```text
+amount, hour, day_of_week, is_weekend, is_late_night, time_since_prev_txn_min,
+txns_last_10min, txns_last_1h, txns_last_24h, user_avg_amount,
+amount_over_user_avg, amount_zscore, is_new_device, is_new_country,
+is_channel_switch
+```
 
----
+The same class and the same feature order are used offline (training replay) and
+online (serving), which removes offline/online feature mismatch by construction.
+`models/feature_order.json` is validated against `FEATURE_ORDER` at load time.
 
-## The dataset (`data/generate_dataset.py`)
+### Security-event correlation rules
 
-I generate a synthetic, multi-channel transaction dataset rather than using a pre-existing
-one, so I can explain every field and design decision:
+Correlation is a separate, pure function (`app/services/correlation.py`) that
+evaluates eight readable rules over the security events that occurred before and
+around one transaction. Weights are additive and clamped at 1.0; correlation only
+raises risk.
 
-- **Channels**: `CARD_PRESENT`, `CARD_NOT_PRESENT`, `UPI_WALLET`, `WIRE_TRANSFER` — each has
-  a different "normal" profile (amount distribution, preferred channel per user).
-- **4,000 synthetic users**, each with a home country, average transaction size, preferred
-  channel, and account age — so "normal" is defined per-user, not globally.
-- **Four injected fraud typologies**, each with a distinct behavioral signature:
-  - `CARD_TESTING` — 6–15 tiny transactions in rapid succession on a new device (fraudsters
-    validating a stolen card before a large purchase).
-  - `ACCOUNT_TAKEOVER` — a burst of large transactions from a new device *and* a foreign
-    country inconsistent with the user's history.
-  - `MULE_FANOUT` — one large incoming wire transfer immediately followed by several
-    smaller outgoing transfers to previously-unseen beneficiaries.
-  - `MERCHANT_COLLUSION` — repeated, suspiciously round-number charges to the same merchant.
+| Rule id | Weight | Meaning |
+|---|---|---|
+| `C-FAILED-LOGIN-BURST` | 0.45 | Repeated failed logins immediately before the transaction |
+| `C-CREDENTIAL-COMPROMISE` | 0.30 | A login from an unusual place or device preceded the transaction |
+| `C-NEW-DEVICE-HIGH-VALUE` | 0.30 | A previously unseen device used for a high-value transaction |
+| `C-PAYMENT-TAMPERING` | 0.40 | Payment details changed shortly before the transaction |
+| `C-COORDINATED-FANOUT` | 0.35 | Money being spread across several new beneficiaries at once |
+| `C-SHARED-DEVICE` | 0.35 | The same device is active on more than one account |
+| `C-MULE-FUNDING` | 0.35 | An incoming wire immediately followed by outgoing transfers |
+| `C-CARD-TESTING` | 0.25 | A burst of tiny probe transactions precedes this one |
+
+The boost is applied additively in the `COMBINED` configuration as
+`min(transaction_risk + 0.5 x correlation_score, 1.0)` (`CORRELATION_BOOST = 0.5`).
+Every rule records the ids of the events that triggered it, and
+`dedupe_alerts` collapses repeats for the same (account, rule) inside a 15-minute
+window so a burst of failures is one alert, not dozens.
+
+### Defense configurations
+
+`app/services/detection.py` (`DEFENSE_CONFIGS`) defines the three configurations
+used by the Defense Comparison Lab:
+
+| Key | Uses ML | Uses correlation | Meaning |
+|---|---|---|---|
+| `NONE` | No | No | No automated defense; every transaction settles (score 0, `ALLOW`) |
+| `RULE_BASED` | No | No | Heuristics only |
+| `COMBINED` | Yes | Yes | Rules + supervised ML + anomaly detection + correlation |
+
+`COMBINED` requires the trained artefacts; without them the simulation engine
+downgrades a run to rule-only and says so, while the API returns `409`.
+
+### Data provenance and determinism
+
+- **Synthetic generator.** `app/ml/synthetic_data.py` produces the ML dataset with
+  four named typologies (`CARD_TESTING`, `ACCOUNT_TAKEOVER`, `MULE_FANOUT`,
+  `MERCHANT_COLLUSION`), seeded with `RNG_SEED = 42`.
+- **Scenario determinism.** `app/services/simulation/scenarios.py` builds its plan
+  with `numpy.random.default_rng(seed)` and stores
+  `sha256(canonical_json)[:16]` as the run fingerprint.
+- **No real customer data.** The dataset is generated locally; PaySim is supported
+  only as an optional bring-your-own file and contains no cybersecurity labels.
+- **Seeds.** The default seed is `42` (`RUPESHIELD_DEFAULT_SEED`); tests use
+  `4242` (`tests/conftest.py`).
+
+## 10. Dataset source, license, schema, and limitations.
+
+The ML dataset is generated locally by this project. Provenance is defined in
+`app/ml/dataset.py` (`DATASET_SOURCES`) and surfaced through `GET /api/docs`.
+
+| Source | URL | License | Cybersecurity labels |
+|---|---|---|---|
+| Synthetic (default) | Generated locally — see `app/ml/synthetic_data.py` | MIT (same as this repository) | No — labels come from the generator |
+| PaySim (optional) | https://www.kaggle.com/datasets/ealaxi/paysim1 | CC BY-SA 4.0 (check the Kaggle page for authoritative terms) | No — transaction columns only |
+
+### Schema
+
+Required columns (`app/ml/dataset.py`, `REQUIRED_COLUMNS`):
+
+`transaction_id`, `user_id`, `timestamp`, `amount`, `channel`, `country`,
+`merchant_id`, `device_id`, `is_fraud`, `fraud_type`
+
+Amounts are in major units (INR) in the CSV and are converted to integer paise
+internally. `is_fraud` is nullable ground truth that always originates from the
+scenario/dataset generator, never from the detector.
+
+### Limitations
+
+- The synthetic dataset is entirely artificial: distributions are designed, not
+  observed from a real bank.
+- Fraud typologies are injected deliberately, so a model can learn them almost
+  perfectly; metrics on this data are an **upper bound**, not a real-world estimate.
+- The dataset carries no authentication, device or geo telemetry, so it cannot
+  measure the contribution of security-event correlation; that is evaluated in the
+  Defense Comparison Lab.
+- PaySim is simulated (multi-agent), provides one step per hour (coarse sub-hour
+  velocity) and is extremely imbalanced (about 0.13% fraudulent rows).
+- Large datasets and any sensitive data are kept out of Git; `data/` is not
+  committed.
+
+## 11. Installation prerequisites.
+
+- **Python 3.12** (used by both the CI workflow and the Docker image).
+- **Node.js 20** and npm, for the dashboard.
+- **Git**, and optionally **Docker** with the Compose plugin.
+- No Java, no message broker, no external database and no API key.
+
+Run the backend from a virtual environment. On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+On macOS or Linux:
 
 ```bash
-python data/generate_dataset.py --n-users 4000 --n-transactions 260000 --fraud-rate 0.012
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## Causal feature engineering (`src/features.py`)
+## 12. Step-by-step local setup.
 
-The single most important design decision in this project: **the same `UserStateStore`
-class is used both offline (replaying history during training) and online (serving live
-requests)**. Every feature is computed using only transactions that happened *before* the
-current one for that user — no future leakage, and no offline/online feature mismatch,
-which is one of the most common real-world bugs in fraud systems.
-
-Features (all O(1) or O(k) with small bounded k):
-`amount`, `hour`, `day_of_week`, `is_weekend`, `is_late_night`, `time_since_prev_txn_min`,
-`txns_last_10min`, `txns_last_1h`, `txns_last_24h`, `user_avg_amount`,
-`amount_over_user_avg`, `amount_zscore`, `is_new_device`, `is_new_country`,
-`is_channel_switch`.
-
-## Hybrid risk engine (`src/risk_engine.py`)
-
-```
-final_risk = 0.55 × XGBoost_probability   (known fraud patterns)
-           + 0.25 × IsolationForest_score (novel/anomalous patterns, calibrated
-                                            against the actual legit-data score
-                                            distribution — see calibration note below)
-           + 0.20 × rule_heuristic_score  (auditable guardrails)
-```
-
-Decision thresholds: `≥0.80 → BLOCK`, `≥0.45 → FLAG`, else `ALLOW`. Every decision comes
-with plain-English reasons (e.g. *"New device AND new country observed simultaneously"*)
-plus the top SHAP-contributing features for the ML component.
-
-> **A calibration bug I found and fixed while building this:** the anomaly score was
-> originally normalized with an assumed fixed center, which saturated near 1.0 for almost
-> *any* transaction — not just genuine anomalies. It didn't visibly break decisions (its
-> 0.25 weight alone couldn't cross the FLAG threshold on its own), but it meant that signal
-> was effectively noise. The fix: `train.py` now computes the actual p50/p99 of the
-> Isolation Forest's `decision_function` on legit training data and saves it as
-> `models/anomaly_calibration.json`; `risk_engine.py` maps new scores against that real
-> distribution instead of a guess. Worth knowing this story for an interview — it's a good
-> example of the gap between "the code runs" and "the numbers are actually meaningful."
-
-## Results (on the generated dataset, holdout split)
-
-The supervised model performs near-perfectly *on the fraud patterns it was trained on* —
-expected, since the synthetic typologies have a clear behavioral signature. The honest
-interview talking point is the isolation forest number: it recovers ~88% of fraud **using
-no labels at all**, which is the actual point of the hybrid design — it's the layer that
-would still catch a fifth, never-labeled fraud typology that XGBoost has never seen.
-
----
-
-## Running it end to end
+From the repository root:
 
 ```bash
+# 1. Install backend dependencies (see section 11 for the venv step)
 pip install -r requirements.txt
 
-# 1. Generate data + train both models
-python data/generate_dataset.py
-python src/train.py
+# 2. (Optional) copy the environment template; defaults work with no .env at all
+cp .env.example .env
 
-# 2. Start the real-time scoring API
+# 3. Generate the synthetic ML dataset
+python scripts/generate_dataset.py --n-users 800 --n-transactions 40000
+
+# 4. Train the detection models (writes artefacts into models/)
+python -m app.ml.train
+
+# 5. Start the backend (port 8000)
 uvicorn app.main:app --reload --port 8000
-# docs at http://127.0.0.1:8000/docs
 
-# 3. In another terminal, watch the live dashboard (self-contained --
-#    it generates its own demo traffic, no separate simulator process needed)
-streamlit run dashboard/app.py
-# click "Start" in the sidebar
-
-# (optional) run the standalone streaming simulator instead, which writes to
-# a local SQLite file the dashboard will auto-detect and read from:
-python streaming/simulator.py --api http://127.0.0.1:8000 --rate 5 --duration 300
+# 6. In a second terminal, install and start the dashboard (port 5173)
+npm --prefix frontend install
+npm --prefix frontend run dev
 ```
 
-Or with Docker (API only):
+Then open:
+
+- Dashboard: http://localhost:5173
+- Interactive API docs: http://127.0.0.1:8000/docs
+
+Alternatively, run the backend alone in Docker:
+
 ```bash
 docker compose up --build
 ```
 
-### Example request
+The `models/` directory already contains trained artefacts, so step 4 is only
+needed after changing the dataset or the feature set. Steps 3 and 4 are required
+for the `COMBINED` defense configuration to run (see section 23).
+
+## 13. Environment variable configuration.
+
+Configuration lives in `app/core/config.py`. Every setting can be overridden with an
+environment variable prefixed `RUPESHIELD_`, or through a `.env` file at the
+repository root (which is git-ignored). Defaults are chosen so the project runs with
+no configuration at all. Nested threshold values use a double underscore
+(`env_nested_delimiter="__"`). The authoritative, commented list is `.env.example`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RUPESHIELD_APP_NAME` | `RupeeShield` | Service name shown in the API |
+| `RUPESHIELD_ENVIRONMENT` | `local` | Environment label (`local`, `docker`, `test`) |
+| `RUPESHIELD_LOG_LEVEL` | `INFO` | Logging level |
+| `RUPESHIELD_DATABASE_URL` | `sqlite:///<repo>/rupeeshield.db` | SQLAlchemy database URL |
+| `RUPESHIELD_MODEL_DIR` | `models` | Where model artefacts are read/written |
+| `RUPESHIELD_DATA_DIR` | `data` | Where the dataset and overrides live |
+| `RUPESHIELD_CORS_ORIGINS` | `["http://localhost:5173","http://127.0.0.1:5173"]` | Browser origins allowed to call the API |
+| `RUPESHIELD_DEFAULT_SEED` | `42` | Default simulation seed |
+| `RUPESHIELD_MAX_SIMULATION_EVENTS` | `1500` | Runaway guard for one simulation |
+| `RUPESHIELD_MAX_BATCH_EVENTS` | `6000` | Runaway guard for batch runs |
+| `RUPESHIELD_DEFAULT_STREAM_PACE_PER_SECOND` | `12` | Default stream rate for `mode=stream` |
+| `RUPESHIELD_MAX_PAGE_SIZE` | `500` | Maximum list page size |
+| `RUPESHIELD_RATE_LIMIT_REQUESTS_PER_MINUTE` | `240` | Sliding-window limit for `/api` routes |
+| `RUPESHIELD_ENABLE_API_TRAINING` | `false` | Enables `POST /api/ml/train` (command-line training is the documented workflow) |
+| `RUPESHIELD_THRESHOLDS__BLOCK_THRESHOLD` | `0.80` | Risk score at or above which a transaction is blocked |
+| `RUPESHIELD_THRESHOLDS__FLAG_THRESHOLD` | `0.45` | Risk score at or above which a transaction is held for review |
+| `RUPESHIELD_THRESHOLDS__RULE_VELOCITY_10MIN` | `5` | Velocity rule threshold (10 minutes) |
+| `RUPESHIELD_THRESHOLDS__RULE_VELOCITY_1H` | `8` | Velocity rule threshold (1 hour) |
+| `RUPESHIELD_THRESHOLDS__RULE_AMOUNT_ZSCORE` | `4.0` | Amount z-score rule threshold |
+| `RUPESHIELD_THRESHOLDS__RULE_AMOUNT_OVER_AVG` | `5.0` | Amount-over-average rule threshold |
+| `RUPESHIELD_THRESHOLDS__FAILED_LOGIN_BURST` | `5` | Failed logins needed to trigger the burst rule |
+| `RUPESHIELD_THRESHOLDS__FAILED_LOGIN_WINDOW_MINUTES` | `10` | Window for the failed-login burst |
+| `RUPESHIELD_THRESHOLDS__CORRELATION_LOOKBACK_MINUTES` | `30` | How far back correlation looks for security events |
+| `RUPESHIELD_THRESHOLDS__NEW_DEVICE_HIGH_VALUE_MINOR` | `40000` | New-device high-value threshold in paise (400.00 INR) |
+| `RUPESHIELD_THRESHOLDS__COORDINATED_FANOUT_BENEFICIARIES` | `3` | Distinct new beneficiaries that trigger the fan-out rule |
+
+Thresholds can also be changed at runtime through `PATCH /api/settings`; overrides
+are persisted to a git-ignored `thresholds.json` in the data directory
+(`app/services/settings_service.py`) and validated so that the flag threshold stays
+below the block threshold. No secret is required by any setting, so nothing secret
+can leak through configuration.
+
+## 14. Dataset preparation.
+
+Generate the dataset with the CLI wrapper around `app/ml/synthetic_data.py`:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/score -H "Content-Type: application/json" -d '{
-  "user_id": "U100042", "amount": 1500, "channel": "UPI_WALLET",
-  "country": "IN", "merchant_id": "M4821", "device_id": "D1234"
-}'
+# Full default: 4,000 accounts, 250,000 transactions, 1.2% fraud, seed 42
+python scripts/generate_dataset.py
+
+# A faster run suitable for a laptop or CI
+python scripts/generate_dataset.py --n-users 800 --n-transactions 40000
+
+# The small, committed sample used for first-time setup (300 accounts / 12k rows / 2%)
+python scripts/generate_dataset.py --sample
 ```
 
-```json
-{
-  "transaction_id": "REQ-8e3fa49174",
-  "fraud_risk_score": 0.83,
-  "decision": "BLOCK",
-  "ml_supervised_score": 1.0,
-  "ml_anomaly_score": 0.91,
-  "rule_heuristic_score": 0.35,
-  "reasons": [
-    "Very high transaction velocity (5+ in last 10 minutes)",
-    "ML model strongly matches a known fraud pattern (p=1.00)",
-    "Transaction is statistically anomalous vs. population (score=0.91)"
-  ],
-  "top_shap_features": [
-    {"feature": "txns_last_10min", "value": 6, "shap_contribution": 3.21}
-  ],
-  "latency_ms": 4.2
-}
+Outputs:
+
+- `data/transactions.csv` — the ML dataset (validated against `REQUIRED_COLUMNS`).
+- `data/users.csv` — the synthetic account profiles behind it.
+
+The generator is seeded, so anyone can regenerate identical data. Neither CSV is
+committed. To use PaySim instead, download it yourself and point training at it with
+`--paysim` (see section 15).
+
+## 15. ML model training.
+
+```bash
+python -m app.ml.train
 ```
 
----
+`app/ml/train.py` performs the full pipeline:
 
-## Deploying it live
+1. Loads and validates the dataset (`load_transactions_csv`).
+2. Handles invalid rows: non-numeric amounts, missing timestamps and non-positive
+   amounts are dropped (`clean_feature_frame`).
+3. Builds the feature table using the same causal `UserStateStore` used at serving
+   time (`build_feature_table`).
+4. Splits **temporally** — the earlier 75% for training, the later 25% for testing —
+   because a random split would leak post-fraud-burst behaviour into training.
+5. Trains **XGBoost** (`n_estimators=400`, `max_depth=5`, `learning_rate=0.05`,
+   `subsample=0.85`, `colsample_bytree=0.85`, minority class weighted,
+   `eval_metric="aucpr"`) using the tail of the training window for early stopping.
+6. Trains an **Isolation Forest** (`n_estimators=300`, `contamination=0.02`) on
+   legitimate rows only.
+7. Computes anomaly-score calibration (the p50 and p99 of the Isolation Forest
+   score on legitimate training data) and writes it to
+   `models/anomaly_calibration.json`.
+8. Evaluates `rule_based`, `transaction_only`, `combined` and `anomaly_only` slices
+   on the same held-out test window.
+9. Saves artefacts and metrics, then registers model versions in the database
+   (skippable with `--no-register`).
 
-You can put a working, publicly-reachable version of this online for free in about ten
-minutes — genuinely useful for a resume link, not just local instructions.
+Artefacts written to `models/` (`app/ml/model_store.py`):
 
-**1. Deploy the API on [Render](https://render.com) (free tier, Docker-based):**
-1. Sign in to Render with your GitHub account.
-2. **New +** → **Web Service** → connect this repository.
-3. Render will detect the `Dockerfile` automatically — leave build/start commands blank.
-4. Instance type: **Free**. Click **Create Web Service**.
-5. Wait for the build (~3–5 min). You'll get a URL like `https://your-app.onrender.com`.
-6. Verify: `curl https://your-app.onrender.com/health`
+| File | Purpose |
+|---|---|
+| `xgb_model.joblib` | Supervised classifier |
+| `iso_forest.joblib` | Unsupervised anomaly detector |
+| `feature_order.json` | Exact feature order the models were trained with |
+| `anomaly_calibration.json` | p50 / p99 of the anomaly score on legitimate data |
+| `metrics.json` | Metrics measured at training time (read by the API, not recomputed) |
+| `training_summary.json` | Compact summary (combined, isolation_forest, rule_based) |
 
-   *Free tier note: the service sleeps after inactivity and takes ~30–60s to wake on the
-   first request — mention this if a reviewer tries it cold.*
+Useful flags: `--transactions`, `--model-dir`, `--test-fraction`, `--paysim`,
+`--no-register`. The `feature_order.json` guard fails loudly if the stored order ever
+diverges from `FEATURE_ORDER`, because the model would otherwise score the wrong
+columns.
 
-2. **Deploy the dashboard on [Streamlit Community Cloud](https://streamlit.io/cloud) (free):**
-1. Sign in with GitHub → **New app** → select this repo, branch `main`, file
-   `dashboard/app.py`.
-2. **Before clicking Deploy**, expand **"Advanced settings"** and set **Python version to
-   3.12**. This step matters:
+## 16. Backend startup.
 
-   > `runtime.txt` is unreliable on Streamlit Community Cloud (confirmed by multiple open
-   > issues in their own repo — it's frequently ignored in favor of whatever the platform's
-   > current default is, e.g. Python 3.13). This project pins `numpy<2` (required for `shap`
-   > compatibility — see the calibration note above), which doesn't ship wheels for Python
-   > 3.13, so the version must be selected explicitly at deploy time. If you already deployed
-   > without setting this, delete the app and redeploy — Python version can't be changed on
-   > an existing deployment.
-3. Under **Advanced settings → Secrets**, nothing is required, but you can optionally set
-   `FRAUD_API_URL = "https://your-app.onrender.com"` as an environment variable so the
-   dashboard defaults to your deployed API instead of `localhost`.
-4. Deploy. In the running app's sidebar, confirm/paste your Render URL into
-   **Scoring API URL**, click **Start**, and watch live-scored transactions stream in.
-
-Once both are live, update the **🔴 Live demo** links at the top of this README.
-
----
-
-## Productionizing further (what I'd change to run this for real)
-
-- Swap `UserStateStore`'s in-memory dict for **Redis** (interface is already isolated in
-  `src/features.py` so this is a drop-in change, not a rewrite).
-- Replace `streaming/simulator.py` with an actual **Kafka/Kinesis** consumer group feeding
-  the same `/score` endpoint — `docker-compose.yml` documents this topology.
-- Add **model monitoring** (e.g. population stability index / Evidently) to catch feature
-  drift as fraud patterns evolve — a static model degrades within weeks in production.
-- Add **shadow deployment** and champion/challenger evaluation before promoting a retrained
-  model, instead of hot-swapping the `.joblib` file.
-
----
-
-## Project structure
-
-```
-fraud-anomaly-detection/
-├── data/
-│   └── generate_dataset.py     # synthetic multi-channel transaction + fraud generator
-├── src/
-│   ├── features.py             # causal, stateful feature engineering (shared train/serve)
-│   ├── train.py                # trains XGBoost + Isolation Forest + anomaly calibration
-│   └── risk_engine.py          # hybrid scoring + rule heuristics + decisioning
-├── app/
-│   ├── main.py                 # FastAPI service (/score, /health)
-│   └── schemas.py              # request/response models
-├── streaming/
-│   └── simulator.py            # async real-time transaction stream simulator
-├── dashboard/
-│   └── app.py                  # self-contained Streamlit live monitoring dashboard
-├── docs/
-│   ├── generate_readme_charts.py  # regenerates the charts embedded in this README
-│   └── images/                    # real, data-backed charts (not mockups)
-├── tests/
-│   └── test_api.py
-├── models/                     # trained models + anomaly calibration (checked in)
-├── .github/workflows/ci.yml    # generates data, trains, runs tests on every push
-├── Dockerfile / docker-compose.yml
-└── requirements.txt
+```bash
+uvicorn app.main:app --reload --port 8000
 ```
 
-## Tech stack
+Endpoints for verification:
 
-FastAPI · XGBoost · scikit-learn (Isolation Forest) · SHAP · Streamlit · Pydantic ·
-pandas/numpy · pytest · Docker · GitHub Actions
+- Interactive OpenAPI docs: http://127.0.0.1:8000/docs
+- ReDoc: http://127.0.0.1:8000/redoc
+- Health check: http://127.0.0.1:8000/api/health
+- Service index at the root: `GET /` returns the version and links.
+
+On startup the app configures logging, creates any missing SQLite tables and
+registers routers. Model artefacts are loaded lazily by the detection service on
+first use, so the API boots and answers `/api/health` even before training has run.
+
+The HTTP surface is grouped below. All paths are relative to the host; the scoring
+endpoint is mounted at the root, everything else under `/api`.
+
+| Module | Method and path | Purpose |
+|---|---|---|
+| System | `GET /api/health` | Liveness, tracked accounts, models loaded |
+| Docs | `GET /api/docs` | In-app documentation payload |
+| A — Overview | `GET /api/overview` | Overview statistics, provenance-labelled |
+| B — Simulator | `GET /api/scenarios` | Scenario catalogue |
+| B — Simulator | `GET /api/simulation/runs` | List runs (paged, filterable by scenario) |
+| B — Simulator | `POST /api/simulation/runs` | Start a run (201; `mode=batch` or `stream`) |
+| B — Simulator | `GET /api/simulation/runs/{run_id}` | Run detail |
+| B — Simulator | `POST /api/simulation/runs/{run_id}/stop` | Stop a run (idempotent) |
+| B — Simulator | `DELETE /api/simulation/runs/{run_id}` | Delete a run and everything derived from it |
+| C — Monitoring | `GET /api/monitoring/events` | Persisted event feed (paged) |
+| C — Monitoring | `GET /api/monitoring/stream` | Server-Sent Events stream for one run |
+| Explorer | `GET /api/transactions` | Transaction ledger (paged) |
+| Explorer | `GET /api/transactions/{transaction_id}` | One transaction with its detection |
+| Explorer | `GET /api/accounts` | Simulated account roster |
+| Explorer | `GET /api/accounts/{account_id}` | One account |
+| Explorer | `GET /api/accounts/{account_id}/events` | Security events for one account |
+| F — Network | `GET /api/network/graph` | Account/transfer graph |
+| H — Incidents | `GET /api/incidents` | Incident queue |
+| H — Incidents | `GET /api/incidents/{incident_id}` | Full incident detail |
+| H — Incidents | `PATCH /api/incidents/{incident_id}/status` | Update incident status |
+| H — Incidents | `POST /api/incidents/{incident_id}/notes` | Add an investigation note |
+| H — Incidents | `POST /api/incidents/{incident_id}/replay` | Read-only replay of recorded events |
+| I — Defense | `GET /api/defense/configs` | The three defense configurations |
+| I — Defense | `POST /api/defense/compare` | Run one scenario under all three defenses |
+| I — Defense | `GET /api/defense/comparisons` | Past comparisons |
+| D/J — ML | `GET /api/ml/model-info` | Artefacts on disk, versions, setup instructions |
+| D/J — ML | `GET /api/ml/evaluation` | Stored metrics, PR curves, latency |
+| D/J — ML | `GET /api/ml/feature-importance` | Gain-based feature importance |
+| D/J — ML | `POST /api/ml/train` | Retrain in-process (gated by `RUPESHIELD_ENABLE_API_TRAINING`) |
+| K — Settings | `GET /api/settings` | Current configuration and thresholds |
+| K — Settings | `PATCH /api/settings` | Update thresholds (validated) |
+| K — Audit | `GET /api/audit` | Audit log, newest first |
+| Scoring | `POST /score` | Score one transaction with the `COMBINED` configuration |
+
+### HTTP error mapping
+
+`app/api/errors.py` maps service exceptions to meaningful status codes and a
+`{ "detail", "code" }` payload: validation errors become `422`, missing resources
+become `404`, and a detection request that needs absent ML artefacts becomes `409`.
+Rate-limited requests return `429` with a `Retry-After` header.
+
+## 17. Frontend startup.
+
+```bash
+npm --prefix frontend install
+npm --prefix frontend run dev
+```
+
+The Vite dev server runs on port **5173** and opens automatically. It proxies
+`/api`, `/health` and `/score` to `http://127.0.0.1:8000` (override the target with
+the `RUPESHIELD_API_URL` environment variable, read in `frontend/vite.config.ts`).
+Proxying keeps the browser same-origin, so the EventSource used by Live Monitoring
+needs no CORS special-casing in development.
+
+Other scripts:
+
+```bash
+npm --prefix frontend run build      # tsc --noEmit && vite build
+npm --prefix frontend run typecheck  # tsc --noEmit
+npm --prefix frontend run preview    # preview the production build
+```
+
+### Navigation and module mapping
+
+The sidebar (`frontend/src/App.tsx`, `NAV_ITEMS`) exposes the nine areas from the
+specification. Each maps to exactly one dashboard page and to the backend modules
+below.
+
+| # | Route | Dashboard area | Backend module(s) |
+|---|---|---|---|
+| 01 | `/overview` | Overview | A — Security Overview (with provenance from G) |
+| 02 | `/attack-simulator` | Attack Simulator | B — Attack Simulator |
+| 03 | `/live-monitoring` | Live Monitoring | C — Live Monitoring |
+| 04 | `/transactions` | Transaction Explorer | Ledger views backing C, F and H |
+| 05 | `/network` | Financial Network | F — Financial Network Visualization |
+| 06 | `/incidents` | Incident Investigation | H — Incident Investigation and Replay (E, G) |
+| 07 | `/defense` | Defense Comparison | I — Defense Comparison Lab (E, G) |
+| 08 | `/model` | ML Model Evaluation | D — ML Detection Engine, J — Model Evaluation |
+| 09 | `/settings` | Settings and Documentation | K — Audit Trail and Security |
+
+Two modules are cross-cutting rather than a single page: **E — Security-Event
+Correlation** surfaces inside the Incident Investigation and Defense Comparison
+views (and its rule catalogue in the documentation payload), and **G — Financial
+Impact Engine** surfaces on the Overview, in a run's results, in incident detail and
+in the Defense Comparison Lab.
+
+The sidebar also polls `GET /api/health` every 15 seconds to show the backend status
+and whether models are loaded, and displays the disclaimer that accounts are never
+labelled criminal.
+
+## 18. Running tests.
+
+Backend (pytest):
+
+```bash
+pytest
+```
+
+or, as CI runs it:
+
+```bash
+pytest tests/ -v
+```
+
+`tests/conftest.py` redirects the database to a temporary SQLite file and points the
+data directory at a temporary folder **before** importing the app, so a test run
+never touches the developer's `rupeeshield.db` or threshold overlay. A session-scoped
+`completed_run` fixture creates one `ACCOUNT_TAKEOVER` run (seed `4242`, 60 events,
+`COMBINED`) and reuses it, and an autouse fixture restores thresholds after each
+test. Coverage includes API behaviour (`tests/test_api.py`) and currency-safe
+arithmetic (`tests/test_money.py`).
+
+Frontend (Vitest):
+
+```bash
+npm --prefix frontend run test
+```
+
+Frontend test files match `src/**/*.test.{ts,tsx}` (for example
+`frontend/src/components/ui.test.tsx` and `frontend/src/lib/format.test.ts`) and run
+under the jsdom environment.
+
+Continuous integration (`.github/workflows/ci.yml`) runs two jobs on push and pull
+request to `main`:
+
+- **backend** (Python 3.12): install dependencies, `python scripts/generate_dataset.py --sample`,
+  `python -m app.ml.train`, then `pytest tests/ -v`.
+- **frontend** (Node 20): `npm ci`, `npm test`, `npm run build`.
+
+## 19. Example simulation workflow.
+
+All requests target `http://127.0.0.1:8000`.
+
+1. **List the scenarios.**
+
+   ```bash
+   curl http://127.0.0.1:8000/api/scenarios
+   ```
+
+2. **Start a streamed run** (so Live Monitoring has a real feed; a batch run writes
+   everything before it returns).
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/simulation/runs \
+     -H "Content-Type: application/json" \
+     -d '{"scenario":"ACCOUNT_TAKEOVER","n_events":60,"seed":4242,"defense_config":"COMBINED","mode":"stream"}'
+   ```
+
+   The response has `status` `RUNNING` and carries the plan's `fingerprint`. With no
+   trained artefacts, a `COMBINED` run is downgraded to rule-only and the run summary
+   says so rather than failing.
+
+3. **Watch the events** (Server-Sent Events) or page the persisted feed.
+
+   ```bash
+   curl -N http://127.0.0.1:8000/api/monitoring/stream?run_id=<run_id>
+   curl "http://127.0.0.1:8000/api/monitoring/events?run_id=<run_id>"
+   ```
+
+4. **Read the run result**, including its incident timeline and financial impact.
+
+   ```bash
+   curl http://127.0.0.1:8000/api/simulation/runs/<run_id>
+   ```
+
+5. **Inspect an incident** and, optionally, replay it read-only.
+
+   ```bash
+   curl http://127.0.0.1:8000/api/incidents/<incident_id>
+   curl -X POST http://127.0.0.1:8000/api/incidents/<incident_id>/replay
+   ```
+
+   Replay recomputes decisions from the recorded events and reports how many diverge
+   from the recorded ones. It never edits the original incident.
+
+6. **Run the defense comparison** for the same scenario and seed.
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/defense/compare \
+     -H "Content-Type: application/json" \
+     -d '{"scenario":"ACCOUNT_TAKEOVER","n_events":60,"seed":4242}'
+   ```
+
+   The three configurations share one plan and one fingerprint, so the only variable
+   is the defense. The comparison reports whichever configuration measured best.
+
+7. **Score a single transaction** directly (the original contract; `COMBINED`).
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/score \
+     -H "Content-Type: application/json" \
+     -d '{"user_id":"U100042","amount":1500,"channel":"UPI_WALLET","country":"IN","merchant_id":"M4821","device_id":"D1234"}'
+   ```
+
+   Features are computed causally from that account's own prior activity, so repeated
+   calls build up velocity and amount history. Without trained artefacts this returns
+   `409` with setup instructions.
+
+You can achieve the same flow entirely through the dashboard: run a scenario on
+**Attack Simulator**, watch it on **Live Monitoring**, open **Incident
+Investigation**, then compare defenses on **Defense Comparison**.
+
+## 20. Explanation of ML evaluation metrics.
+
+The ML Model Evaluation page reads stored metrics through `GET /api/ml/evaluation`.
+Every block states which data produced it (`split`: `train`, `validation`, `test` or
+`simulation`), so a number can never be read out of context
+(`app/services/ml_service.py`, `METRIC_BLOCKS`).
+
+| Metric | Meaning |
+|---|---|
+| Precision | Of the transactions flagged, the fraction that were actually fraud |
+| Recall | Of the fraudulent transactions, the fraction that were flagged |
+| F1 | Harmonic mean of precision and recall |
+| PR-AUC | Area under the precision-recall curve; the headline metric under imbalance |
+| ROC-AUC | Area under the ROC curve; reported but less informative when positives are rare |
+| False-positive rate | Of the legitimate transactions, the fraction wrongly flagged |
+| Confusion matrix | Counts of true/false positives and negatives |
+| Inference latency | Mean / p50 / p95 / p99 scoring time, measured from recorded detections |
+
+**Why accuracy is not a headline.** The positive class is roughly 3% of rows, so a
+model that predicts "legitimate" for everything scores about 97% accuracy while
+catching nothing. Precision, recall, PR-AUC and the false-positive rate are reported
+instead. When an evaluation slice contains only one class, the affected metrics are
+returned as `null` with an explanation rather than a misleading `0.0`.
+
+**Model lineup.** The evaluation reports four slices, all measured on the same
+held-out test window: `xgboost` (supervised, transaction features only),
+`isolation_forest` (unsupervised, fitted on legitimate rows only), `combined` (rules
++ both models, at the FLAG threshold) and `rule_based` (heuristics only, no ML).
+Security-event correlation is **not** measurable on the transaction dataset (it has
+no telemetry); it is evaluated in the Defense Comparison Lab against simulated
+scenarios that do carry security events.
+
+**Snapshot.** The values currently stored in the checked-in `models/metrics.json`
+are shown below for reference. They are read from that file, not recomputed, and
+will change if you retrain:
+
+| Slice | Precision | Recall | F1 | PR-AUC | ROC-AUC | FPR |
+|---|---|---|---|---|---|---|
+| XGBoost (supervised) | 0.9957 | 0.9787 | 0.9871 | 0.9975 | 0.9999 | 0.000136 |
+| Isolation Forest (unsupervised) | 0.2642 | 0.9915 | 0.4172 | 0.7815 | 0.9936 | 0.088263 |
+| Combined hybrid | 0.9957 | 0.9787 | 0.9871 | 0.9980 | 0.9999 | 0.000136 |
+| Rule heuristics only | 1.0000 | 0.1872 | 0.3154 | 0.7191 | 0.9051 | 0.000000 |
+
+These metrics are an upper bound because the dataset is synthetic and its typologies
+are known to the model by construction. Treat them as evidence that the pipeline is
+wired correctly, not as a real-world performance claim.
+
+## 21. Financial impact formulas and assumptions.
+
+The impact engine (`app/services/financial_impact.py`) separates value that moved
+from value that did not. All arithmetic is done on **integer paise** and `Decimal`,
+never binary floats (`app/utils/money.py`, `MINOR_UNITS_PER_MAJOR = 100`).
+
+### Buckets (disjoint — nothing is counted twice)
+
+| Bucket | Definition |
+|---|---|
+| `exposure` | Value of every transaction the scenario touched, settled or not |
+| `unauthorized` | Value of transactions that settled and carry a fraud label (realized loss) |
+| `prevented` | Value of fraudulent transactions blocked or held before settlement (avoided loss) |
+| `interrupted` | Value of legitimate transactions blocked or held before settlement (false-positive cost) |
+
+### Rates and constants
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `DISRUPTION_RATE` | `0.005` (0.5%) | Review and customer-friction cost of operating the defense |
+| `RECOVERY_RATE` | `0.10` (10%) | Chargebacks, forensics and remediation on realized loss |
+| `INCIDENT_HANDLING_MINOR` | `25_000` paise (250.00 INR) | Flat analyst time per incident |
+
+### Formulas (rounded half-up to the nearest paisa)
+
+```text
+disruption_cost = ROUND_HALF_UP( 0.005 x (unauthorized + prevented + interrupted) )
+recovery_cost   = ROUND_HALF_UP( 0.10 x unauthorized ) + incidents x 25_000  # paise
+net_impact      = unauthorized + disruption_cost + recovery_cost - prevented
+```
+
+A negative `net_impact` means the defense saved more than the event cost. A defence
+that blocks everything prevents every loss but interrupts legitimate value, and that
+friction is charged through `interrupted`, so "block everything" is not free.
+
+### Assumptions (verbatim from `ASSUMPTIONS`)
+
+- All amounts are integers of paise (1 INR = 100 paise); no binary floating point is used.
+- `exposure` is the value of every transaction the scenario touched, whether it settled or not.
+- `unauthorized` is the value of transactions that settled and carry a fraud label: the realized loss.
+- `prevented` is avoided loss, not money that moved.
+- `interrupted` is the false-positive cost, measured in value rather than counts.
+- A transaction blocked before settlement is **not** counted as a loss, whether it was
+  fraudulent (`prevented`) or legitimate (`interrupted`).
+- The four buckets are disjoint, so no value is counted twice.
+- These are modelled estimates from a synthetic scenario, not audited financial statements.
+
+The exact formulas and assumptions are returned with every impact payload and listed
+in the Settings page (`app/services/financial_impact.py`, `formula_reference()`).
+
+## 22. Screenshots or placeholders for screenshots to be added later.
+
+No screenshots are bundled with the repository yet. The following placeholders
+document the intended images; add files under `docs/images/` with these names to
+have them render.
+
+| Placeholder | Intended content |
+|---|---|
+| `docs/images/overview.png` | Overview page: transaction count, alerts, open incidents, value at risk, prevented loss |
+| `docs/images/attack-simulator.png` | Attack Simulator: scenario selection, progress, incident timeline |
+| `docs/images/live-monitoring.png` | Live Monitoring: the streamed event feed |
+| `docs/images/financial-network.png` | Financial Network graph with risk-labelled nodes |
+| `docs/images/incident-investigation.png` | Incident detail with timeline, rules and impact |
+| `docs/images/defense-comparison.png` | Defense Comparison: three configurations side by side |
+| `docs/images/model-evaluation.png` | ML Model Evaluation: metrics, PR curve, feature importance |
+
+```markdown
+<!-- Example of how each placeholder will be embedded once the image exists -->
+![Overview](docs/images/overview.png)
+```
+
+## 23. Troubleshooting.
+
+| Problem | Resolution |
+|---|---|
+| The API starts but `/api/overview` returns zeros everywhere | No simulation has run yet. Open **Attack Simulator** and run a scenario; every Overview metric is computed from stored rows, so it is genuinely empty until data exists. |
+| Models are reported as unavailable and every decision is rule-only | Train them locally: run `python scripts/generate_dataset.py` then `python -m app.ml.train`. Nothing is downloaded and no key is required. |
+| `Missing model artefact(s)` / a `409` from `POST /score`, or `DetectionUnavailable` | The `COMBINED` configuration needs `models/xgb_model.joblib` and `models/iso_forest.joblib`. Train the models (section 15); a `COMBINED` simulation run is downgraded to rule-only with a note in its summary rather than failing. |
+| `No dataset found at .../data/transactions.csv` | Generate it: `python scripts/generate_dataset.py --n-users 800 --n-transactions 40000`. The error message states the exact command. |
+| Live Monitoring shows nothing while a run is in progress | The feed reads persisted rows. Create the run with `mode = "stream"` so events are written as they are generated; a batch run writes everything before it returns. |
+| The combined defense configuration is reported as `RULE_BASED` in a comparison | The trained ML artefacts are missing, so the ML components are unavailable. The comparison says so in its notes instead of silently reporting a rules-only result as combined. |
+| Replay reports a non-zero divergence count | The recomputed decision differs from the recorded one, meaning thresholds or model artefacts changed after the incident was recorded. Replay never edits the original incident, so the recorded history stays intact. |
+| The frontend cannot reach the API | Start the backend on port 8000 (`uvicorn app.main:app --port 8000`). The Vite dev server proxies `/api` and `/health` to `127.0.0.1:8000`. Confirm `RUPESHIELD_CORS_ORIGINS` includes `http://localhost:5173`. |
+| `Port 8000 is already in use` (or 5173) | Another process holds the port. Stop it, or start on a different port: `uvicorn app.main:app --port 8001`, and point the frontend at it with `RUPESHIELD_API_URL=http://127.0.0.1:8001`. |
+| Requests start returning `429` | The in-process sliding-window limiter is deliberately low. Wait for the window to pass or raise `RUPESHIELD_RATE_LIMIT_REQUESTS_PER_MINUTE`. |
+| Import or syntax errors on startup | Confirm you are on Python 3.12 and inside the virtual environment, then reinstall: `pip install -r requirements.txt`. CI and the Docker image both pin Python 3.12. |
+| Frontend install fails on Node | Node 20 is required (the CI workflow and `frontend/package.json` assume it). |
+
+The in-app Troubleshooting list is maintained in `app/services/documentation.py` and
+served at `GET /api/docs`.
+
+## 24. Security and ethical-use notes.
+
+The application implements the boundary-level controls below. It deliberately does
+**not** claim production-grade banking security.
+
+- **Input validation** on every route boundary
+  (`app/security/validation.py`): choices checked against allowed sets, identifiers
+  restricted to `^[A-Za-z0-9_\-:.]{1,64}$`, amounts required non-negative and
+  positive, text sanitised, page sizes clamped to `RUPESHIELD_MAX_PAGE_SIZE`.
+- **Safe exception handling** (`app/api/errors.py`): validation errors become `422`,
+  missing resources `404`, and a detection request that needs absent artefacts `409`
+  — never a fabricated success.
+- **Safe persistence:** SQLAlchemy 2.x ORM with parameterised queries; money stored
+  as integer paise columns; timestamps as naive UTC.
+- **Rate limiting:** an in-process sliding-window limiter applied to the aggregate
+  `/api` router (`app/security/ratelimit.py`).
+- **Audit logging:** append-only records of simulation actions and defensive
+  decisions, readable at `GET /api/audit` (`app/security/audit.py`).
+- **No secrets required:** configuration is non-sensitive; runtime threshold
+  overrides are written to a git-ignored file. Nothing secret is committed.
+- **No arbitrary command execution:** the only shell commands in the project are the
+  ones a developer runs by hand.
+
+### Ethical use
+
+- This platform simulates a bank. It never connects to a real bank, a real payment
+  network or any third-party system, and it makes no real payments.
+- Every attack is a locally generated scenario script. No capability is provided to
+  attack, scan, probe or degrade any external system.
+- All accounts, transactions, devices and security events are synthetic. No real
+  personal or financial data is stored, processed or displayed.
+- Accounts are never described as criminal. The strongest labels used are
+  **"flagged for investigation"** and **"elevated simulated risk"**.
+- Ground-truth fraud labels come from the scenario generator, so every precision and
+  recall figure is a measurement against a known answer, not a claim about
+  real-world performance.
+- Results are educational. They illustrate detection/false-positive trade-offs and
+  are not a statement about any production fraud system.
+
+These statements are maintained in `app/services/documentation.py` (`ETHICS`) and
+displayed in the application.
+
+## 25. Known limitations.
+
+- **Synthetic-only evidence.** Because the dataset is generated by this project and
+  its fraud typologies are known by construction, all model metrics are an upper
+  bound and prove nothing about real-world fraud.
+- **No telemetry in the ML dataset.** The training dataset has no authentication or
+  device data, so the contribution of security-event correlation can only be measured
+  in the Defense Comparison Lab, on scenario data with a different population.
+- **The research question is open.** One scenario and one seed is a single data
+  point. The Defense Comparison Lab reports whichever configuration measured best and
+  does not assume the combined approach wins; several seeds would be needed before
+  any difference could be read as general.
+- **In-process state.** The `UserStateStore` is per-process and in-memory, so it is
+  not shared across replicas and does not survive a restart
+  (`app/api/routes/score.py`). It is documented as a local teaching design.
+- **No authentication or authorization.** There are no user roles; the API is
+  unauthenticated and intended for local use only.
+- **Threshold-estimate parameters.** `DISRUPTION_RATE`, `RECOVERY_RATE` and
+  `INCIDENT_HANDLING_MINOR` are documented modelling choices, not measured costs.
+- **Front-end bundle.** The dashboard is a build-time SPA proxied in development; it
+  is not packaged into the Docker image, which serves the API only.
+- **Feature importances.** The classifier is fitted from a numeric matrix, so
+  XGBoost names its columns `f0`, `f1`, ...; `app/ml/evaluate.py` maps those gains
+  back to the real feature names by position (the order is pinned by
+  `models/feature_order.json`). Importances therefore reflect the fitted booster and
+  legitimately read `0.0` for features the model never split on.
+
+## 26. Future improvements.
+
+- Move the feature store to Redis so the causal state is shared across replicas
+  (`app/ml/features.py` already isolates the store behind a class).
+- Add population-stability / drift monitoring so a stale model is detected rather
+  than silently decaying.
+- Add shadow deployment and champion/challenger evaluation before promoting a
+  retrained model, instead of hot-swapping artefacts.
+- Package the frontend build into the Docker image so a single container serves the
+  dashboard and the API.
+- Add hyperparameter search and additional model families, keeping the current
+  evaluation harness.
+- Add pagination-aware bulk export of an incident's evidence for offline review.
+
+## 27. Contributor responsibilities.
+
+- **Keep claims verifiable.** Every number in documentation, the UI and this README
+  must be traceable to a stored value or a formula in the code. Do not add statistics
+  that are not computed from data.
+- **Never claim production readiness.** RupeeShield is a local educational
+  simulation; do not describe it as production-grade banking security.
+- **Preserve the safety boundary.** Do not introduce any capability that contacts an
+  external system, executes arbitrary commands, or processes real financial data.
+- **Label accounts carefully.** Use "flagged for investigation" or "elevated
+  simulated risk"; never label an account criminal.
+- **Keep the evaluation honest.** Report `train` / `validation` / `test` /
+  `simulation` for every metric, keep the temporal split, and never tune on the test
+  window. Report cases where the combined defense performs worse.
+- **Respect the money invariants.** Perform monetary arithmetic in integer paise and
+  `Decimal`, and keep the impact buckets disjoint.
+- **Keep layers clean.** Routes stay thin; business logic belongs in
+  `app/services/`, queries in `app/db/repositories/`, and ML training is separate
+  from inference.
+- **Write tests with deterministic seeds** and run them before declaring work done.
+- **Do not commit** datasets, databases, model artefacts produced by a local run, or
+  any secret.
+
+## 28. License and third-party attribution.
+
+RupeeShield is released under the **MIT License** (see `LICENSE`, copyright 2026
+Nishchay Azad). The synthetic dataset generator and the application code are covered
+by the same license.
+
+Third-party components and their licenses:
+
+| Component | Use | License |
+|---|---|---|
+| FastAPI | Web framework | MIT |
+| Uvicorn | ASGI server | BSD-3-Clause |
+| Pydantic / pydantic-settings | Validation and configuration | MIT |
+| SQLAlchemy | ORM | MIT |
+| NumPy | Numerical arrays | BSD-3-Clause |
+| pandas | Tabular data | BSD-3-Clause |
+| scikit-learn | Isolation Forest and metrics | BSD-3-Clause |
+| XGBoost | Supervised classifier | Apache-2.0 |
+| SHAP (optional) | Feature explanations | MIT |
+| pytest / httpx | Testing (development) | MIT / BSD-3-Clause |
+| React, React DOM, react-router-dom | Frontend | MIT |
+| Vite, Vitest | Build and test tooling | MIT |
+| Recharts | Charts | MIT |
+| Cytoscape.js | Graph rendering | MIT |
+| TypeScript | Types | Apache-2.0 |
+
+Optional external dataset: **PaySim**, licensed **CC BY-SA 4.0** and available at
+https://www.kaggle.com/datasets/ealaxi/paysim1. It is not bundled; download it
+yourself and point training at it with `--paysim`. Check the Kaggle page for the
+authoritative license terms.
