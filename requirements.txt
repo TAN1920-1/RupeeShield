@@ -1,19 +1,32 @@
+# RupeeShield runtime dependencies.
+#
+# Everything here is free and open source, and the whole stack runs locally with no
+# external service, API key or paid tier. Install with:
+#
+#     python -m venv .venv
+#     .venv\Scripts\activate        (Windows)  |  source .venv/bin/activate  (macOS/Linux)
+#     pip install -r requirements.txt
+
+# ---- web layer ---------------------------------------------------------------
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.6
+pydantic>=2.12.0
+pydantic-settings>=2.6.0,<3
 
-numpy==1.26.4
-pandas==2.2.3
-pyarrow==18.1.0
+# ---- persistence (SQLite by default: no server, no credentials, no cost) -----
+SQLAlchemy>=2.0.36,<3
 
-scikit-learn==1.6.1
-xgboost==2.1.4
-joblib==1.4.2
-shap==0.46.0
+# ---- data + machine learning -------------------------------------------------
+numpy>=1.26,<3
+pandas==2.3.3
+scikit-learn==1.7.2
+xgboost==2.0.3
 
-streamlit==1.41.1
-httpx==0.28.1
+# ---- explainability ----------------------------------------------------------
+# Imported lazily by the detection service. If SHAP is unavailable the app still
+# works and simply reports SHAP as not installed in the ML Model Evaluation page.
+shap>=0.50.0
+
+# ---- tests -------------------------------------------------------------------
 pytest==8.3.4
-
-# dev-only: used by docs/generate_readme_charts.py, not required to run the app
-matplotlib==3.9.0
+httpx==0.28.1

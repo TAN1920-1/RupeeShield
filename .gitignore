@@ -1,17 +1,41 @@
+# ---- Python ------------------------------------------------------------------
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
 .venv/
 venv/
 *.egg-info/
-streaming/live_scores.db
-.DS_Store
-.idea/
-.vscode/
+.mypy_cache/
+.ruff_cache/
+
+# ---- local runtime state -----------------------------------------------------
+# The SQLite database is created on first startup and is never committed.
+rupeeshield.db
+rupeeshield.db-wal
+rupeeshield.db-shm
 *.log
 
-# Keep the trained models and a sample of data in the repo so the project runs
-# out of the box for a reviewer, but ignore the full 260k-row raw CSV to keep
-# the repo lightweight -- regenerate it with data/generate_dataset.py.
+# Local overrides. `.env.example` is committed; `.env` is not, because it may hold
+# machine-specific paths or secrets.
+.env
+
+# ---- generated data ----------------------------------------------------------
+# The generator is seeded, so the datasets are reproducible rather than precious.
+# Regenerate with: python scripts/generate_dataset.py
 data/transactions.csv
+data/users.csv
 data/feature_table.parquet
+# Threshold overrides written by PATCH /api/settings (machine-specific state).
+data/thresholds.json
+
+# ---- frontend ----------------------------------------------------------------
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# ---- editors / OS ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

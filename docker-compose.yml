@@ -1,28 +1,33 @@
-# Minimal stack: the scoring API only. This is enough to run the whole demo
-# (API + streaming/simulator.py + dashboard/app.py can all run on the host and
-# talk to this container over localhost:8000).
+# RupeeShield — single-service local stack.
 #
-# The commented-out `redis` and `kafka` services below show how this would be
-# productionized: UserStateStore backed by Redis (so state survives restarts and
-# is shared across multiple API replicas), and a Kafka topic feeding a consumer
-# group of scoring workers instead of the asyncio simulator. Left commented so
-# the project runs with zero extra infra for a demo/interview, while still
-# documenting the intended production topology.
+#   docker compose up --build      API on http://localhost:8000  (docs at /docs)
+#
+# The image contains the FastAPI app and the pre-trained artefacts in `models/`.
+# Run the React dashboard on the host with `cd frontend && npm run dev`; the Vite
+# dev server proxies /api to this container.
+#
+# SQLite lives inside the container. Mount a volume at /app/data (and set
+# RUPESHIELD_DATABASE_URL) if you want runs to survive `docker compose down`.
+#
+# Everything is deliberately local: no message broker, no cache, no external calls.
 services:
   api:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      RUPESHIELD_ENVIRONMENT: docker
+      RUPESHIELD_LOG_LEVEL: INFO
+      RUPESHIELD_CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 10s
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+        ]
+      interval: 15s
       timeout: 5s
       retries: 5
-
-  # redis:
-  #   image: redis:7-alpine
-  #   ports: ["6379:6379"]
-  #
-  # kafka:
-  #   image: redpandadata/redpanda:latest
-  #   ports: ["9092:9092"]
+      start_period: 10s
