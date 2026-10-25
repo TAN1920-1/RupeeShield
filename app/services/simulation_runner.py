@@ -33,9 +33,11 @@ from app.db import repositories as repo
 from app.db.session import SessionLocal
 from app.security.audit import record_audit
 from app.security.validation import ValidationError
+from app.services import banking
 from app.services.financial_impact import ASSUMPTIONS, impact_row_to_dict
 from app.services.incidents import shape_incident
 from app.services.simulation import catalog
+from app.services.simulation.accounts import ROLE_VICTIM, account_id
 from app.services.simulation.engine import execute_plan
 from app.services.simulation.scenarios import build_plan
 from app.utils.ids import new_id
@@ -184,6 +186,19 @@ def _execute(
             status=outcome.status,
             generated_events=outcome.generated_events,
             summary=outcome.summary,
+        )
+        # Give the demo customer the accounts this run attacked. The rows are not
+        # copied: the customer's dashboard, transaction history and security centre
+        # then read the very transactions, events, detections and incidents the
+        # scenario just wrote, which is what "linked through backend records" means.
+        banking.link_run_accounts(
+            session,
+            run_id,
+            [
+                account_id(run_id, account.index)
+                for account in plan.accounts
+                if account.role == ROLE_VICTIM
+            ],
         )
         record_audit(
             session,

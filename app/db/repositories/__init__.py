@@ -17,8 +17,10 @@ from app.db.repositories import (
     detections,
     governance,
     incidents,
+    notifications,
     runs,
     transactions,
+    users,
 )
 
 __all__ = [
@@ -26,6 +28,8 @@ __all__ = [
     "detections",
     "governance",
     "incidents",
+    "notifications",
     "runs",
     "transactions",
+    "users",
 ]

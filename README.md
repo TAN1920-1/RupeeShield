@@ -15,8 +15,12 @@ The project is built as a real, working application rather than a UI prototype:
 
 - A **FastAPI** backend exposes a documented HTTP API under `/api` plus the
   original direct-scoring endpoint at `POST /score`.
-- A **React + TypeScript** dashboard consumes that API across nine navigation
-  areas, from an Overview of live statistics to a Defense Comparison Lab.
+- A **React + TypeScript** dashboard with **two signed-in workspaces**: a *customer
+  banking* experience (accounts, transaction history, simulated transfers and an
+  Account Security Center) and a *security operations* console across nine areas, from
+  an Overview of live statistics to a Defense Comparison Lab.
+- **Local authentication with two roles** (customer and analyst), server-side
+  sessions and server-enforced authorization, plus clearly-labelled demo logins.
 - Both halves run locally with no paid service, no API key and no external data.
   The ML dataset is generated on this machine from a seed.
 
@@ -95,6 +99,51 @@ treated as a question, not as a proven result.
 - **Audit logging and validation** on the boundary; a sliding-window rate limiter on
   every `/api` route (`app/security/audit.py`, `app/security/validation.py`,
   `app/security/ratelimit.py`).
+- **Virtual banking experience** for the customer side: a signed-in dashboard with
+  account cards and balances read from the database, a filterable transaction
+  history with detail views, a simulated transfer flow that scores through the real
+  detection pipeline, and an Account Security Center (`app/services/banking.py`,
+  `frontend/src/pages/`).
+- **Local authentication and two roles** with server-side sessions and
+  server-enforced authorization (`app/services/auth.py`, `app/api/__init__.py`).
+- **Notification centre fed by stored events** rather than frontend timers
+  (`app/services/notifications.py`).
+
+### Virtual banking experience and roles.
+
+The platform has two signed-in roles. Both are real, backend-enforced roles, not
+labels on a page:
+
+| Role | Sees | Backend scope |
+|---|---|---|
+| **Customer** | Their own accounts, balances, transaction history, transfer flow and security centre | `banking` routers are scoped to the signed-in owner inside the service; a customer cannot widen that scope with a query parameter |
+| **Security Analyst** | The nine security-operations areas (overview, simulator, monitoring, explorer, network, incidents, defense, model, settings) | The security modules require an `ANALYST` session; a customer token is refused with `403` |
+
+Authorization is applied by router group in `app/api/__init__.py` and re-checked on
+every request, so hiding a navigation item in the browser is never the thing that
+protects a resource. A customer's ledger and the analyst's transaction explorer read
+the same `transactions` rows, and a scenario launched by an analyst writes events
+that appear on the customer's security page — see section 9 for the shared schema.
+
+### Authentication approach.
+
+- **Passwords are never stored in plaintext.** Set and verified with a stdlib
+  `hashlib.pbkdf2_hmac` (`pbkdf2_sha256$<iterations>$<salt>$<digest>`,
+  `RUPESHIELD_PASSWORD_ITERATIONS` default `180000`) in `app/security/passwords.py`.
+- **Sessions are server-side.** Sign-in mints an opaque `secrets.token_urlsafe(32)`
+  token; only its SHA-256 digest is written to `auth_sessions`, with an expiry of
+  `RUPESHIELD_SESSION_TTL_MINUTES` (default 120). The browser stores the token under
+  `rupeeshield.session.token` and sends it as `Authorization: Session <token>`
+  (also accepted: `Bearer`, or `X-Session-Token`).
+- **Failures are indistinguishable.** An unknown email and a wrong password return
+  the same message, so sign-in cannot be used to enumerate accounts.
+- **Protected routes and logout.** The dashboard resolves the token before rendering
+  a route, sends unauthenticated visitors to `/login`, and `POST /api/auth/logout`
+  revokes the session server-side. Sign-in attempts, including failures, are recorded
+  as security events and can raise a notification.
+- **No hardcoded production secrets.** The only credentials in the repository are the
+  clearly-labelled local demo logins (section 12), which are created only while demo
+  mode is enabled and are hashed at rest like any other.
 
 ### Attack scenarios
 
@@ -137,9 +186,14 @@ banking security system.
 - Ground-truth fraud labels come from the scenario generator, so every precision and
   recall figure is a measurement against a known answer, not a claim about
   real-world performance.
-- The application has no authentication, no multi-tenant isolation and no hardened
-  deployment. The in-memory feature store is per-process and is not shared between
-  replicas (`app/api/routes/score.py`).
+- The application ships a local authentication and role model (customer vs analyst),
+  but it is **not** a hardened, multi-tenant deployment: there is no HTTPS, no
+  password reset, no external identity provider and no protection against an
+  attacker who already has the machine. The in-memory feature store is per-process
+  and is not shared between replicas (`app/api/routes/score.py`).
+- The banking side is a **simulator**. Balances, payees and "money" exist only as
+  rows in a local SQLite file; a transfer moves rows, not funds. There is no
+  settlement, no interest, no fees and no real payment rail.
 - All financial figures are modelled estimates from a synthetic scenario, not audited
   financial statements.
 
@@ -154,6 +208,8 @@ banking security system.
 | Explainability | SHAP (optional) | Per-transaction feature contributions; absent without breaking scoring |
 | Data | pandas 2.3.3, NumPy | Schema validation, temporal splitting and reproducible generation |
 | Frontend | React 18.3 + TypeScript 5.6 (strict) + Vite 5 | Type-safe SPA with a fast dev server and a built-in dev proxy |
+| Routing | react-router-dom 6 | Role-based routes and a URL that survives a refresh |
+| Auth | stdlib `hashlib` + `secrets` | PBKDF2 password hashing and opaque session tokens with no extra dependency |
 | Charts | Recharts 2.12 | React-native charting for the dashboards |
 | Graph | Cytoscape 3.30 | Purpose-built graph rendering for the financial network |
 | Frontend tests | Vitest 2.1 + jsdom + Testing Library | The Vite-native test runner, so one toolchain for build and test |
@@ -169,14 +225,15 @@ and `frontend/package.json`.
 ```mermaid
 flowchart TB
     subgraph Browser["Browser - React + TypeScript dashboard (frontend/, Vite, port 5173)"]
-        NAV["Nine navigation areas"]
-        CLIENT["api/client.ts + hooks"]
+        NAV["Role-based shell: Banking workspace or Security Operations"]
+        CLIENT["api/client.ts + AuthContext + hooks"]
         SSE["EventSource / SSE client"]
     end
 
     subgraph API["FastAPI service - app/main.py (uvicorn, port 8000)"]
         MW["CORS middleware + exception handlers + sliding-window rate limit"]
-        ROUTES["14 route modules under /api plus POST /score at the root"]
+        AUTHZ["Per-group authorization: public (health, auth), analyst-only security modules, owner-scoped banking"]
+        ROUTES["17 route modules under /api plus POST /score at the root"]
     end
 
     subgraph Services["Business logic - app/services/"]
@@ -185,7 +242,9 @@ flowchart TB
         CORR["correlation.py - eight rules"]
         FI["financial_impact.py - paise arithmetic"]
         LAB["defense_lab.py"]
-        SUPPORT["monitoring, network, overview, incidents, ml_service, settings_service, documentation"]
+        BANK["banking.py - owner-scoped accounts, ledger, transfers, security centre"]
+        IDENT["auth.py - password verification, server-side sessions, security events"]
+        SUPPORT["monitoring, network, overview, incidents, ml_service, notifications, settings_service, documentation"]
     end
 
     subgraph ML["ML - app/ml/"]
@@ -203,6 +262,10 @@ flowchart TB
 
     Browser <-->|"HTTP /api/* and SSE; POST /score"| API
     ROUTES --> Services
+    AUTHZ --> ROUTES
+    IDENT --> DB
+    BANK --> DET
+    BANK --> DB
     DET --> RISK
     DET --> CORR
     RISK --> PRED
@@ -218,9 +281,12 @@ flowchart TB
 
 Request routing is intentionally thin. `app/api/__init__.py` mounts one aggregate
 router at `/api` with the rate limiter applied once; `app/main.py` mounts the
-scoring router at the root. Business logic lives in `app/services/`, persistence in
-`app/db/`, and ML training is separate from inference (`app/ml/train.py` versus
-`app/ml/predict.py`).
+scoring router at the root. Authorization is applied in the same file by grouping
+routers — public (health, sign-in), analyst-only security modules, owner-scoped
+banking, and notifications for any signed-in role — so a role check is a property of
+the router group rather than something each handler remembers to do. Business logic
+lives in `app/services/`, persistence in `app/db/`, and ML training is separate from
+inference (`app/ml/train.py` versus `app/ml/predict.py`).
 
 ## 8. Repository directory structure.
 
@@ -228,15 +294,16 @@ scoring router at the root. Business logic lives in `app/services/`, persistence
 Real-Time-Fraud-Detection-Anomaly-Intelligence-Platform/
 ├── app/                          # FastAPI backend
 │   ├── api/
-│   │   ├── routes/               # 14 route modules + score.py (see section 7)
-│   │   ├── deps.py               # SessionDep, client_host, enforce_rate_limit
-│   │   ├── errors.py             # 422 / 404 / 409 exception mapping
-│   │   └── __init__.py           # aggregate /api router
+│   │   ├── routes/               # 17 route modules + score.py (see section 7)
+│   │   ├── deps.py               # identity dependencies, SessionDep, client_host, rate limit
+│   │   ├── errors.py             # 401 / 403 / 422 / 404 / 409 exception mapping
+│   │   └── __init__.py           # aggregate /api router + per-group authorization
 │   ├── core/                     # config.py (settings), logging.py
 │   ├── db/
-│   │   ├── models.py             # 13 tables (runs, accounts, transactions, ...)
+│   │   ├── models.py             # 17 tables (users, accounts, transactions, ...)
+│   │   ├── seed.py               # demo bank seeder (CLI: python -m app.db.seed)
 │   │   ├── session.py            # engine + init_db
-│   │   └── repositories/         # query helpers
+│   │   └── repositories/         # query helpers (owner-scoped account queries)
 │   ├── ml/
 │   │   ├── dataset.py            # schema validation + provenance
 │   │   ├── synthetic_data.py     # seeded dataset generator
@@ -248,9 +315,12 @@ Real-Time-Fraud-Detection-Anomaly-Intelligence-Platform/
 │   │   ├── evaluate.py           # metrics, PR curves, importance, latency
 │   │   └── model_store.py        # artefact load/save
 │   ├── schemas/                  # Pydantic request/response models
-│   ├── security/                 # validation.py, ratelimit.py, audit.py
+│   ├── security/                 # passwords.py, access.py, validation.py, ratelimit.py, audit.py
 │   ├── services/
 │   │   ├── simulation/           # accounts.py, catalog.py, scenarios.py, engine.py
+│   │   ├── auth.py               # password verification, sessions, sign-in events
+│   │   ├── banking.py            # owner-scoped accounts, ledger, transfers, security centre
+│   │   ├── notifications.py      # per-role notification feed
 │   │   ├── correlation.py        # eight correlation rules
 │   │   ├── defense_lab.py        # three-configuration comparison
 │   │   ├── detection.py          # maps a configuration onto scoring
@@ -267,20 +337,21 @@ Real-Time-Fraud-Detection-Anomaly-Intelligence-Platform/
 │   └── main.py                   # FastAPI app
 ├── frontend/                     # React + TypeScript dashboard (Vite)
 │   ├── src/
-│   │   ├── api/                  # client.ts, types.ts
-│   │   ├── components/           # ui.tsx, charts.tsx, NetworkGraphView.tsx
+│   │   ├── api/                  # client.ts, session.ts, types.ts
+│   │   ├── auth/                 # AuthContext.tsx, ProtectedRoute.tsx
+│   │   ├── components/           # ui.tsx, banking.tsx, shell.tsx, notifications.tsx, ...
 │   │   ├── hooks/                # useApiResource.ts
 │   │   ├── lib/                  # format.ts
-│   │   ├── pages/                # nine page components
+│   │   ├── pages/                # 15 page components (banking + security)
 │   │   ├── styles/               # theme.css
-│   │   ├── App.tsx               # sidebar + routes
+│   │   ├── App.tsx               # role-based shell + routes
 │   │   └── main.tsx
 │   ├── package.json
 │   └── vite.config.ts
 ├── models/                       # trained artefacts (checked in)
 ├── scripts/
 │   └── generate_dataset.py       # synthetic dataset CLI
-├── tests/                        # pytest suite (services, API, ML, money)
+├── tests/                        # pytest suite (services, API, ML, money, banking)
 ├── .github/workflows/ci.yml      # backend + frontend CI
 ├── .env.example                  # documented environment variables
 ├── Dockerfile                    # single-service API image
@@ -449,6 +520,42 @@ downgrades a run to rule-only and says so, while the API returns `409`.
 - **Seeds.** The default seed is `42` (`RUPESHIELD_DEFAULT_SEED`); tests use
   `4242` (`tests/conftest.py`).
 
+### Database entities and relationships
+
+`app/db/models.py` defines 17 SQLAlchemy tables. The conceptual entities named in the
+specification map onto them; the rest are the simulation and ML records the platform
+already needed.
+
+| Entity | Table | Notes |
+|---|---|---|
+| User | `users` | `role` is `CUSTOMER` or `ANALYST`; email is unique; the password column holds a PBKDF2 hash, never plaintext |
+| CustomerProfile | `customer_profiles` | One-to-one with a customer `User` (display name, contact, segment) |
+| BankAccount | `accounts` | `user_id` is nullable — a scenario roster is not a customer; `kind` is `CUSTOMER` or `PAYEE`; balance is integer minor units |
+| Transaction | `transactions` | `account_id` plus optional `counterparty_id`, optional `run_id`, signed `amount_minor`, `status` |
+| SecurityEvent | `security_events` | Belongs to an `account_id`; optional `run_id` and `incident_id`; carries kind, severity, device and country |
+| SecurityIncident | `incidents` | Groups its timeline in `incident_events`; carries an optional `run_id` |
+| DetectionResult | `detection_results` | One scored decision per transaction: risk score, decision, reasons, correlation rules, SHAP evidence |
+| Notification | `notifications` | Optional `user_id` plus `kind` and an entity type/id that point at a real event or transfer |
+| AuditLog | `audit_logs` | Append-only; action and actor only, no passwords or tokens |
+| AuthSession | `auth_sessions` | Server-side session; the token is stored only as a SHA-256 digest, with issue and expiry times |
+| Simulation | `simulation_runs`, `replay_runs`, `defense_actions`, `financial_impacts`, `defense_comparisons`, `model_versions` | Existing scenario, replay, defense and ML bookkeeping |
+
+Relationships that carry the banking ↔ security link:
+
+- A customer `User` owns one `CustomerProfile`, many `AuthSession`s and many
+  `Notification`s, and is the `owner` (`accounts.user_id`) of its `BankAccount`s.
+- A `BankAccount` appears as `account_id` on its own rows and as `counterparty_id` on
+  the other side of a transfer, so both legs of one movement are rows in the same
+  table.
+- A `Transaction` has one `DetectionResult` and, when it was raised by an attack
+  scenario, an optional `run_id`.
+- A `SecurityEvent` belongs to one `BankAccount` and may belong to one `Incident`;
+  that incident then owns its `IncidentEvent` timeline and its `FinancialImpact`
+  figures.
+- Because the customer's ledger and the analyst's console read the same `transactions`,
+  `security_events` and `incidents` rows, a scenario and a transfer show up on both
+  sides with the same identifiers — there is no second, page-specific copy.
+
 ## 10. Dataset source, license, schema, and limitations.
 
 The ML dataset is generated locally by this project. Provenance is defined in
@@ -485,6 +592,11 @@ scenario/dataset generator, never from the detector.
   committed.
 
 ## 11. Installation prerequisites.
+
+> Setting the project up on a new machine for the first time? Follow the
+> step-by-step **[INSTALL.md](INSTALL.md)** guide, which covers Windows, macOS and
+> Linux, the Docker alternative and a troubleshooting table. This section is the
+> short version.
 
 - **Python 3.12** (used by both the CI workflow and the Docker image).
 - **Node.js 20** and npm, for the dashboard.
@@ -524,10 +636,15 @@ python scripts/generate_dataset.py --n-users 800 --n-transactions 40000
 # 4. Train the detection models (writes artefacts into models/)
 python -m app.ml.train
 
-# 5. Start the backend (port 8000)
+# 5. Seed the demo bank: the customer, their accounts, payees, transaction
+#    history, sign-in telemetry, one scored probe payment and its incident.
+#    Safe to re-run — it does nothing once the demo data exists.
+python -m app.db.seed
+
+# 6. Start the backend (port 8000)
 uvicorn app.main:app --reload --port 8000
 
-# 6. In a second terminal, install and start the dashboard (port 5173)
+# 7. In a second terminal, install and start the dashboard (port 5173)
 npm --prefix frontend install
 npm --prefix frontend run dev
 ```
@@ -537,6 +654,20 @@ Then open:
 - Dashboard: http://localhost:5173
 - Interactive API docs: http://127.0.0.1:8000/docs
 
+The dashboard opens on the sign-in page. Sign in with a demo login:
+
+| Role | Email | Password |
+|---|---|---|
+| Customer | `priya.sharma@rupeeshield.demo` | `demo-customer-2026` |
+| Security Analyst | `analyst@rupeeshield.demo` | `demo-analyst-2026` |
+
+These are **fictional local demo credentials**. They are created only while
+`RUPESHIELD_DEMO_MODE_ENABLED` is true (the default), published by
+`GET /api/auth/demo-credentials` so the sign-in page can label the demo buttons, and
+stored as PBKDF2 hashes — never as plaintext. Change or disable them through
+environment variables (section 13) before sharing a machine, because the passwords
+above are in this document.
+
 Alternatively, run the backend alone in Docker:
 
 ```bash
@@ -545,7 +676,9 @@ docker compose up --build
 
 The `models/` directory already contains trained artefacts, so step 4 is only
 needed after changing the dataset or the feature set. Steps 3 and 4 are required
-for the `COMBINED` defense configuration to run (see section 23).
+for the `COMBINED` defense configuration to run (see section 23). Step 5 (the seed)
+is what gives the sign-in page an account to sign in with; without it the demo
+logins exist but the demo customer has no accounts or ledger to show.
 
 ## 13. Environment variable configuration.
 
@@ -571,6 +704,18 @@ no configuration at all. Nested threshold values use a double underscore
 | `RUPESHIELD_MAX_PAGE_SIZE` | `500` | Maximum list page size |
 | `RUPESHIELD_RATE_LIMIT_REQUESTS_PER_MINUTE` | `240` | Sliding-window limit for `/api` routes |
 | `RUPESHIELD_ENABLE_API_TRAINING` | `false` | Enables `POST /api/ml/train` (command-line training is the documented workflow) |
+| `RUPESHIELD_SESSION_TTL_MINUTES` | `120` | How long a sign-in session stays valid before it expires |
+| `RUPESHIELD_PASSWORD_MIN_LENGTH` | `8` | Shortest accepted password when a password is set |
+| `RUPESHIELD_PASSWORD_ITERATIONS` | `180000` | PBKDF2-HMAC-SHA256 iteration count for stored password hashes |
+| `RUPESHIELD_MAX_FAILED_LOGINS` | `5` | Failed sign-ins within the burst window that raise a security event |
+| `RUPESHIELD_DEMO_MODE_ENABLED` | `true` | Creates and publishes the two demo logins; set `false` to remove them |
+| `RUPESHIELD_DEMO_CUSTOMER_EMAIL` | `priya.sharma@rupeeshield.demo` | Demo customer sign-in email |
+| `RUPESHIELD_DEMO_CUSTOMER_PASSWORD` | `demo-customer-2026` | Demo customer password (hashed at rest) |
+| `RUPESHIELD_DEMO_ANALYST_EMAIL` | `analyst@rupeeshield.demo` | Demo analyst sign-in email |
+| `RUPESHIELD_DEMO_ANALYST_PASSWORD` | `demo-analyst-2026` | Demo analyst password (hashed at rest) |
+| `RUPESHIELD_TRANSFER_MIN_MINOR` | `100` | Smallest transfer in paise (1.00 INR) |
+| `RUPESHIELD_TRANSFER_MAX_MINOR` | `20000000` | Largest single transfer in paise (200,000.00 INR) |
+| `RUPESHIELD_TRANSFER_DAILY_LIMIT_MINOR` | `50000000` | Daily transfer ceiling per customer in paise (500,000.00 INR) |
 | `RUPESHIELD_THRESHOLDS__BLOCK_THRESHOLD` | `0.80` | Risk score at or above which a transaction is blocked |
 | `RUPESHIELD_THRESHOLDS__FLAG_THRESHOLD` | `0.45` | Risk score at or above which a transaction is held for review |
 | `RUPESHIELD_THRESHOLDS__RULE_VELOCITY_10MIN` | `5` | Velocity rule threshold (10 minutes) |
@@ -711,6 +856,23 @@ endpoint is mounted at the root, everything else under `/api`.
 | K — Settings | `GET /api/settings` | Current configuration and thresholds |
 | K — Settings | `PATCH /api/settings` | Update thresholds (validated) |
 | K — Audit | `GET /api/audit` | Audit log, newest first |
+| Auth | `POST /api/auth/login` | Sign in; records the attempt and issues a server-side session |
+| Auth | `GET /api/auth/session` | Resolve the presented token (401 when expired or revoked) |
+| Auth | `POST /api/auth/logout` | Revoke the presented session |
+| Auth | `POST /api/auth/logout-all` | Revoke every session for the signed-in user |
+| Auth | `GET /api/auth/demo-credentials` | Publish the demo logins (only while demo mode is on) |
+| Notifications | `GET /api/notifications` | Your notifications plus the unread count (customer- or analyst-scoped) |
+| Notifications | `GET /api/notifications/unread-count` | Unread badge count |
+| Notifications | `POST /api/notifications/{notification_id}/read` | Mark one notification read |
+| Notifications | `POST /api/notifications/read-all` | Mark every notification read |
+| Banking | `GET /api/banking/accounts` | The signed-in customer's own accounts and balances |
+| Banking | `GET /api/banking/accounts/{account_id}` | One owned account with its recent activity |
+| Banking | `GET /api/banking/payees` | Beneficiaries the customer may transfer to |
+| Banking | `GET /api/banking/transactions` | Own ledger (search, date range, account, type, status, suspicious, paged) |
+| Banking | `GET /api/banking/transactions/{transaction_id}` | Own transaction with detection evidence and incident links |
+| Banking | `POST /api/banking/transfers` | Simulated transfer: validates, scores through the real pipeline, moves money atomically |
+| Banking | `GET /api/banking/security-centre` | Account Security Center: posture, sign-ins, devices, suspicious rows, incidents |
+| Banking | `POST /api/banking/security-centre/simulate-login` | Raise a real "new sign-in" security event for the customer |
 | Scoring | `POST /score` | Score one transaction with the `COMBINED` configuration |
 
 ### HTTP error mapping
@@ -743,9 +905,23 @@ npm --prefix frontend run preview    # preview the production build
 
 ### Navigation and module mapping
 
-The sidebar (`frontend/src/App.tsx`, `NAV_ITEMS`) exposes the nine areas from the
-specification. Each maps to exactly one dashboard page and to the backend modules
-below.
+The sidebar (`frontend/src/components/shell.tsx`, `BANKING_NAV` and `SECURITY_NAV`)
+shows a different set of areas per role, and `frontend/src/App.tsx` renders the shell
+from the role the API reports at sign-in. A customer never sees the
+security-operations door and vice versa, but that is a convenience only — every route
+is wrapped in `ProtectedRoute` and every endpoint re-checks the role on the server, so
+typing a URL for the other role's area is refused by the API, not just hidden.
+
+**Customer — Banking workspace**
+
+| # | Route | Dashboard area | Backend module(s) |
+|---|---|---|---|
+| B1 | `/banking` | Banking Dashboard (welcome, account cards, balances) | Banking — accounts, payees |
+| B2 | `/banking/transactions` | Transaction History (filters, detail, flagged links) | Banking — ledger, detector |
+| B3 | `/banking/transfer` | Simulated Transfer | Banking — transfers, detection pipeline |
+| B4 | `/banking/security` | Account Security Center | Banking — security centre |
+
+**Security Analyst — Security Operations workspace**
 
 | # | Route | Dashboard area | Backend module(s) |
 |---|---|---|---|
@@ -759,15 +935,24 @@ below.
 | 08 | `/model` | ML Model Evaluation | D — ML Detection Engine, J — Model Evaluation |
 | 09 | `/settings` | Settings and Documentation | K — Audit Trail and Security |
 
+Both workspaces are two views of **one backend and one database**. A customer who
+runs a transfer produces a real scored transaction, a security event and a
+notification; an analyst who launches a scenario produces transactions and events
+that appear on the customer's banking dashboard, their transaction history and their
+security centre. Nothing is duplicated per page — the fields come from the same rows
+(see section 9).
+
 Two modules are cross-cutting rather than a single page: **E — Security-Event
 Correlation** surfaces inside the Incident Investigation and Defense Comparison
 views (and its rule catalogue in the documentation payload), and **G — Financial
 Impact Engine** surfaces on the Overview, in a run's results, in incident detail and
 in the Defense Comparison Lab.
 
-The sidebar also polls `GET /api/health` every 15 seconds to show the backend status
+The shell also polls `GET /api/health` every 15 seconds to show the backend status
 and whether models are loaded, and displays the disclaimer that accounts are never
-labelled criminal.
+labelled criminal. A breadcrumb trail (`useCrumbs`) and a notification panel backed by
+`GET /api/notifications` sit in the top bar for both roles; the panel reads real
+stored events and never fabricates announcements on a frontend timer.
 
 ## 18. Running tests.
 
@@ -788,8 +973,16 @@ data directory at a temporary folder **before** importing the app, so a test run
 never touches the developer's `rupeeshield.db` or threshold overlay. A session-scoped
 `completed_run` fixture creates one `ACCOUNT_TAKEOVER` run (seed `4242`, 60 events,
 `COMBINED`) and reuses it, and an autouse fixture restores thresholds after each
-test. Coverage includes API behaviour (`tests/test_api.py`) and currency-safe
-arithmetic (`tests/test_money.py`).
+test. Coverage includes API behaviour (`tests/test_api.py`), currency-safe
+arithmetic (`tests/test_money.py`), and the banking experience end to end
+(`tests/test_banking.py`): sign-in success and failure, protected routes and session
+expiry, logout revoking access, role authorization checked against the server, a
+customer only reaching their own rows, every transaction filter, transfer validation
+and insufficient balance, duplicate submission (idempotency key and the repeat
+window), the atomicity of the debit/credit pair, the Account Security Center, and a
+scenario launched on the security side surfacing on the customer side. That module
+seeds through the real `app.db.seed`, so the fixtures exercise the documented data
+path.
 
 Frontend (Vitest):
 
@@ -987,6 +1180,11 @@ have them render.
 | Placeholder | Intended content |
 |---|---|
 | `docs/images/overview.png` | Overview page: transaction count, alerts, open incidents, value at risk, prevented loss |
+| `docs/images/login.png` | Sign-in page with the labelled demo-credential buttons |
+| `docs/images/banking-dashboard.png` | Banking Dashboard: welcome, account cards, balance summary |
+| `docs/images/transaction-history.png` | Transaction History: filters, status badges, detail view |
+| `docs/images/transfer.png` | Simulated Transfer: confirmation dialog and detection result |
+| `docs/images/account-security.png` | Account Security Center: posture, sign-ins, devices, open incidents |
 | `docs/images/attack-simulator.png` | Attack Simulator: scenario selection, progress, incident timeline |
 | `docs/images/live-monitoring.png` | Live Monitoring: the streamed event feed |
 | `docs/images/financial-network.png` | Financial Network graph with risk-labelled nodes |
@@ -1015,6 +1213,11 @@ have them render.
 | Requests start returning `429` | The in-process sliding-window limiter is deliberately low. Wait for the window to pass or raise `RUPESHIELD_RATE_LIMIT_REQUESTS_PER_MINUTE`. |
 | Import or syntax errors on startup | Confirm you are on Python 3.12 and inside the virtual environment, then reinstall: `pip install -r requirements.txt`. CI and the Docker image both pin Python 3.12. |
 | Frontend install fails on Node | Node 20 is required (the CI workflow and `frontend/package.json` assume it). |
+| The sign-in page has no demo buttons | Demo mode is off (`RUPESHIELD_DEMO_MODE_ENABLED=false`), so `GET /api/auth/demo-credentials` returns nothing. Set it back to `true` and restart the API to recreate the demo logins. |
+| `Incorrect email or password` for a demo login | The demo bank has not been seeded, or demo mode is off. Run `python -m app.db.seed` (it is safe to re-run) and confirm demo mode is enabled. |
+| The customer dashboard shows no accounts | The database has no seeded demo bank. Run `python -m app.db.seed`, then sign in again. |
+| You are signed out unexpectedly after a while | Sessions expire after `RUPESHIELD_SESSION_TTL_MINUTES` (default 120). Sign in again; the token is discarded as soon as the API reports it as expired. |
+| Opening a customer URL as the analyst (or the reverse) fails | That is the intended behaviour: the role check happens on the server, so a route for the other role returns `403` rather than rendering. Sign in as the correct role. |
 
 The in-app Troubleshooting list is maintained in `app/services/documentation.py` and
 served at `GET /api/docs`.
@@ -1039,6 +1242,17 @@ The application implements the boundary-level controls below. It deliberately do
   decisions, readable at `GET /api/audit` (`app/security/audit.py`).
 - **No secrets required:** configuration is non-sensitive; runtime threshold
   overrides are written to a git-ignored file. Nothing secret is committed.
+- **Password hashing:** passwords are stored as PBKDF2-HMAC-SHA256 hashes with a
+  per-password salt and a configurable iteration count; plaintext is never written
+  (`app/security/passwords.py`).
+- **Server-side sessions:** the session token is an opaque random string and only its
+  SHA-256 digest is stored, so a database read cannot reconstruct a live token; end
+  points and logout revoke it server-side (`app/services/auth.py`).
+- **Server-enforced authorization:** the customer/analyst split is applied by router
+  group and re-checked per request; hiding a button is never the control
+  (`app/api/__init__.py`).
+- **No PII in audit logs:** audit records capture the action and actor identity, not
+  passwords, tokens or secrets (`app/security/audit.py`).
 - **No arbitrary command execution:** the only shell commands in the project are the
   ones a developer runs by hand.
 
@@ -1076,8 +1290,14 @@ displayed in the application.
 - **In-process state.** The `UserStateStore` is per-process and in-memory, so it is
   not shared across replicas and does not survive a restart
   (`app/api/routes/score.py`). It is documented as a local teaching design.
-- **No authentication or authorization.** There are no user roles; the API is
-  unauthenticated and intended for local use only.
+- **Local, non-production authentication.** Sign-in uses PBKDF2 password hashes and
+  server-side sessions with two roles, but there is no HTTPS, no multi-factor
+  authentication, no password reset, no external identity provider and no account
+  lockout beyond the recorded failed-login event. It is a teaching authentication
+  layer, not a production identity system.
+- **Synthetic banking.** Balances and transfers are rows in a local SQLite file. A
+  transfer moves rows, not funds, and there is no settlement, interest, fee or real
+  payment rail.
 - **Threshold-estimate parameters.** `DISRUPTION_RATE`, `RECOVERY_RATE` and
   `INCIDENT_HANDLING_MINOR` are documented modelling choices, not measured costs.
 - **Front-end bundle.** The dashboard is a build-time SPA proxied in development; it
@@ -1101,6 +1321,10 @@ displayed in the application.
 - Add hyperparameter search and additional model families, keeping the current
   evaluation harness.
 - Add pagination-aware bulk export of an incident's evidence for offline review.
+- Harden the authentication layer: HTTPS termination, password reset, an external
+  identity provider and optional multi-factor authentication for the analyst role.
+- Let an analyst acknowledge and resolve a customer's notification from the security
+  console, closing the loop between the two workspaces in one place.
 
 ## 27. Contributor responsibilities.
 

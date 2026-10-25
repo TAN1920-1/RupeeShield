@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -52,8 +52,37 @@ if settings.is_sqlite:
 
 
 def init_db() -> None:
-    """Create any missing tables. Safe to call on every startup."""
+    """Create any missing tables and add any newly-declared columns.
+
+    ``create_all`` creates tables but never alters an existing one. The banking
+    upgrade added nullable columns to ``accounts`` and ``transactions``, so a
+    database created by an earlier version would otherwise fail on first query.
+    Only *nullable* columns are back-filled this way; anything else needs a real
+    migration, and the documented reset path is to delete the database file and
+    re-run ``python -m app.db.seed``.
+    """
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """Best-effort additive schema sync (SQLite-friendly, no-op elsewhere)."""
+    if not settings.is_sqlite:
+        return
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {column["name"] for column in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in present or not column.nullable:
+                    continue
+                column_type = column.type.compile(dialect=engine.dialect)
+                connection.exec_driver_sql(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}'
+                )
 
 
 def dispose_engine() -> None:

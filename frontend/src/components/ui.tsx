@@ -208,6 +208,19 @@ export function Loading({ label = 'Loading…' }: { label?: string }) {
   );
 }
 
+/**
+ * Page-level loading placeholder, as distinct from the inline `Loading` spinner:
+ * it occupies the same space the content will, so a page does not jump when the
+ * request resolves.
+ */
+export function LoadingState({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="state" role="status" aria-live="polite">
+      <Loading label={label} />
+    </div>
+  );
+}
+
 export function Notice({ children, tone = 'info' }: { children: ReactNode; tone?: 'info' | 'warning' }) {
   return <div className={`notice ${tone === 'warning' ? 'notice--warning' : ''}`}>{children}</div>;
 }

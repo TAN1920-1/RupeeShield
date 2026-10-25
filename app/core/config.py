@@ -85,6 +85,32 @@ class Settings(BaseSettings):
     # documented workflow is `python -m app.ml.train` on the command line.
     enable_api_training: bool = False
 
+    # -- local authentication -------------------------------------------------
+    # The product is single-user-per-browser and local: an opaque session token is
+    # issued for the configured lifetime and re-checked on every request.
+    session_ttl_minutes: int = Field(default=120, ge=1)
+    password_min_length: int = Field(default=8, ge=8)
+    # PBKDF2-HMAC-SHA256 work factor. Lowered in tests to keep the suite fast;
+    # the default is the value the shipped configuration uses.
+    password_iterations: int = Field(default=180_000, ge=1_000)
+    # After this many consecutive failures the account is temporarily locked.
+    max_failed_logins: int = Field(default=5, ge=1)
+
+    # -- demo access ----------------------------------------------------------
+    # The demo credentials are published in the README, so they are configuration
+    # rather than secrets. There is no production deployment of this project.
+    demo_mode_enabled: bool = True
+    demo_customer_email: str = "priya.sharma@rupeeshield.demo"
+    demo_customer_password: str = "demo-customer-2026"
+    demo_analyst_email: str = "analyst@rupeeshield.demo"
+    demo_analyst_password: str = "demo-analyst-2026"
+
+    # -- banking limits -------------------------------------------------------
+    # 200,000.00 INR per transfer and 500,000.00 INR per rolling 24 hours.
+    transfer_max_minor: int = Field(default=20_000_000, ge=1)
+    transfer_daily_limit_minor: int = Field(default=50_000_000, ge=1)
+    transfer_min_minor: int = Field(default=100, ge=1)  # 1.00 INR
+
     thresholds: ThresholdSettings = ThresholdSettings()
 
     @property

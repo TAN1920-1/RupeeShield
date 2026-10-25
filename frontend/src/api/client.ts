@@ -7,10 +7,15 @@
  */
 import type {
   Account,
+  AccountCard,
+  AccountList,
   AppSettings,
   AuditEntry,
+  CustomerTransaction,
+  CustomerTransactionDetail,
   DefenseComparison,
   DefenseConfigInfo,
+  DemoCredential,
   DocumentationPayload,
   Incident,
   IncidentDetail,
@@ -18,16 +23,26 @@ import type {
   ModelInfo,
   MonitoringEvent,
   NetworkGraph,
+  NotificationFeed,
   OverviewPayload,
   Paginated,
+  Payee,
   Replay,
   ScenarioInfo,
   ScoreResponse,
+  SecurityCentre,
+  SessionIssued,
+  SessionStatus,
+  SimulatedLogin,
   SimulationRun,
   SimulationRunDetail,
   Transaction,
   TransactionDetail,
+  TransactionFilters,
+  TransferRequest,
+  TransferResult,
 } from './types';
+import { getDeviceId, getToken, notifyUnauthorized } from './session';
 
 const API_BASE = '/api';
 
@@ -43,12 +58,20 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit, root = false): Promise<T> {
   const url = root ? path : `${API_BASE}${path}`;
+  // The token is read fresh on every call, so signing out in one tab takes effect
+  // in the next request this tab makes rather than at the next page load.
+  const token = getToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  };
+  if (token) {
+    headers.Authorization = `Session ${token}`;
+  }
+
   let response: Response;
   try {
-    response = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' },
-      ...init,
-    });
+    response = await fetch(url, { ...init, headers });
   } catch (cause) {
     throw new ApiError(
       `Cannot reach the RupeeShield API at ${API_BASE}. Is the backend running?`,
@@ -57,6 +80,13 @@ async function request<T>(path: string, init?: RequestInit, root = false): Promi
   }
 
   if (!response.ok) {
+    // A rejected session is not a generic failure: it means the token that *was*
+    // sent no longer resolves, so the app should return to the sign-in page. Only
+    // fire when a token was actually presented, otherwise a failed sign-in would
+    // look like an expiry.
+    if (response.status === 401 && token) {
+      notifyUnauthorized();
+    }
     let detail = `${response.status} ${response.statusText}`;
     try {
       const body = (await response.json()) as { detail?: unknown };
@@ -77,7 +107,7 @@ async function request<T>(path: string, init?: RequestInit, root = false): Promi
   return (await response.json()) as T;
 }
 
-function query(params: Record<string, string | number | boolean | undefined | null>): string {
+function query(params: Record<string, unknown>): string {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
@@ -230,6 +260,62 @@ export const api = {
 
   auditLog: (params: { limit?: number; offset?: number; action?: string } = {}) =>
     request<Paginated<AuditEntry>>(`/audit${query(params)}`),
+
+  // -- authentication -----------------------------------------------------
+  /** The published demo logins. Public: the sign-in page needs them before a session. */
+  demoCredentials: () => request<DemoCredential[]>('/auth/demo-credentials'),
+
+  login: (body: { email: string; password: string; device_id: string }) =>
+    request<SessionIssued>('/auth/login', { method: 'POST', body: JSON.stringify(body) }),
+
+  session: () => request<SessionStatus>('/auth/session'),
+
+  logout: () =>
+    request<{ message: string; revoked: number }>('/auth/logout', { method: 'POST' }),
+
+  // -- notifications ------------------------------------------------------
+  notifications: (params: { unread_only?: boolean; limit?: number; offset?: number } = {}) =>
+    request<NotificationFeed>(`/notifications${query(params)}`),
+
+  unreadCount: () => request<{ unread: number }>('/notifications/unread-count'),
+
+  markNotificationRead: (notificationId: string) =>
+    request<{ message: string }>(`/notifications/${notificationId}/read`, { method: 'POST' }),
+
+  markAllNotificationsRead: () =>
+    request<{ message: string }>('/notifications/read-all', { method: 'POST' }),
+
+  // -- customer banking ---------------------------------------------------
+  bankingAccounts: () => request<AccountList>('/banking/accounts'),
+
+  bankingAccount: (accountId: string) => request<AccountCard>(`/banking/accounts/${accountId}`),
+
+  payees: () => request<Payee[]>('/banking/payees'),
+
+  bankingTransactions: (params: TransactionFilters = {}) =>
+    // Spread into a plain object so a named interface, which has no index
+    // signature, can travel through `query` like every other filter set.
+    request<Paginated<CustomerTransaction>>(`/banking/transactions${query({ ...params })}`),
+
+  bankingTransaction: (transactionId: string) =>
+    request<CustomerTransactionDetail>(`/banking/transactions/${transactionId}`),
+
+  createTransfer: (body: TransferRequest) =>
+    request<TransferResult>('/banking/transfers', {
+      method: 'POST',
+      // The device id travels as a header, exactly as the browser's own device
+      // fingerprint does, and is what the new-device rule reads.
+      headers: { 'X-Device-Id': getDeviceId() },
+      body: JSON.stringify(body),
+    }),
+
+  securityCentre: () => request<SecurityCentre>('/banking/security-centre'),
+
+  simulateLogin: (deviceId?: string) =>
+    request<SimulatedLogin>(
+      `/banking/security-centre/simulate-login${query({ device_id: deviceId })}`,
+      { method: 'POST' },
+    ),
 
   // -- direct scoring -----------------------------------------------------
   /** The original real-time scoring endpoint, mounted at the API root. */

@@ -37,6 +37,118 @@ class Base(DeclarativeBase):
 
 
 # ---------------------------------------------------------------------------
+# Identity and access
+# ---------------------------------------------------------------------------
+ROLE_CUSTOMER = "CUSTOMER"
+ROLE_ANALYST = "ANALYST"
+ROLES = (ROLE_CUSTOMER, ROLE_ANALYST)
+
+# What an account is *for* in the banking experience. ``None`` means unspecified,
+# which is how every scenario-created account stays: a simulation roster is not a
+# customer, and pretending otherwise would blur the two sides of the platform.
+ACCOUNT_KIND_CUSTOMER = "CUSTOMER"
+ACCOUNT_KIND_PAYEE = "PAYEE"
+ACCOUNT_KINDS = (ACCOUNT_KIND_CUSTOMER, ACCOUNT_KIND_PAYEE)
+
+
+class User(Base):
+    """A local, demonstration-only account.
+
+    This is not an identity provider. Credentials exist so the banking and the
+    cybersecurity sides of the platform can be exercised under two different sets
+    of permissions, and every user in a fresh database is fictional demo data.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    email: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), default=ROLE_CUSTOMER, nullable=False, index=True)
+    # Encoded PBKDF2-HMAC-SHA256 value ("pbkdf2_sha256$iterations$salt$digest").
+    # A plaintext password is never stored, logged or returned.
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    profile: Mapped[Optional["CustomerProfile"]] = relationship(
+        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class CustomerProfile(Base):
+    """Non-sensitive customer attributes. Deliberately holds no credentials."""
+
+    __tablename__ = "customer_profiles"
+
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False, unique=True, index=True
+    )
+    phone_masked: Mapped[str] = mapped_column(String(24), default="")
+    city: Mapped[str] = mapped_column(String(60), default="")
+    kyc_status: Mapped[str] = mapped_column(String(20), default="VERIFIED")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="profile")
+
+
+class AuthSession(Base):
+    """A server-side session.
+
+    The client holds an opaque random token; only its SHA-256 digest is stored, so
+    a database dump does not hand out working sessions. Expiry and revocation are
+    both enforced on every request, which is what makes logout real rather than a
+    frontend-only redirect.
+    """
+
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    client_host: Mapped[str] = mapped_column(String(60), default="")
+    user_agent: Mapped[str] = mapped_column(String(160), default="")
+
+    __table_args__ = (Index("ix_auth_sessions_user_expires", "user_id", "expires_at"),)
+
+
+class Notification(Base):
+    """An in-app alert produced by a real backend event.
+
+    Rows are written by the services that observe the event (a blocked transfer, a
+    failed-login burst, a new incident) and never by a frontend timer.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    # A notification addresses one user, or every user holding a role.
+    user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(12), default="INFO", nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="")
+    entity_type: Mapped[str] = mapped_column(String(40), default="")
+    entity_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
+    # Stable key so a repeated event does not produce a second notification.
+    dedupe_key: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (Index("ix_notifications_user_created", "user_id", "created_at"),)
+
+
+# ---------------------------------------------------------------------------
 # Simulation control
 # ---------------------------------------------------------------------------
 class SimulationRun(Base):
@@ -96,6 +208,16 @@ class Account(Base):
     # Deliberately cautious wording: an account is never labelled as criminal.
     risk_status: Mapped[str] = mapped_column(String(40), default="NORMAL", index=True)
     is_synthetic: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Owner of the account in the banking experience. NULL means "bank-owned" --
+    # simulation rosters are created without an owner, and a scenario launched by a
+    # signed-in customer links its primary account back to that customer so the
+    # banking and the cybersecurity views read the same rows.
+    owner_user_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    # CUSTOMER | PAYEE | NULL. Nullable so the additive SQLite column sync can add
+    # it to an existing database; a scenario account simply leaves it unset.
+    account_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     transactions: Mapped[list["Transaction"]] = relationship(
@@ -127,6 +249,13 @@ class Transaction(Base):
     is_fraud: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     fraud_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     scenario: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # Client-supplied key that makes a customer transfer idempotent: a replayed
+    # submission finds the original row and returns it instead of moving money twice.
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, unique=True)
+    # Free-text memo shown to the customer. Bounded on the way in.
+    description: Mapped[Optional[str]] = mapped_column(String(140), nullable=True)
+    # Groups the two legs (debit + credit) of one customer transfer.
+    transfer_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
     run: Mapped[Optional[SimulationRun]] = relationship(back_populates="transactions")

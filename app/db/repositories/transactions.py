@@ -226,3 +226,211 @@ def network_edges(session: Session, run_id: str | None = None, limit: int = 400)
     if run_id:
         statement = statement.where(Transaction.run_id == run_id)
     return session.execute(statement).all()
+
+
+# ---------------------------------------------------------------------------
+# Customer-scoped reads (the banking experience)
+# ---------------------------------------------------------------------------
+def owned_transactions(
+    session: Session,
+    *,
+    account_ids: list[str],
+    limit: int,
+    offset: int,
+    account_id: str | None = None,
+    search: str | None = None,
+    status: str | None = None,
+    direction: str | None = None,
+    suspicious: bool | None = None,
+    date_from=None,
+    date_to=None,
+) -> tuple[list[tuple[Transaction, str | None, DetectionResult | None]], int]:
+    """The same triple shape as :func:`list_transactions`, restricted to a set of accounts.
+
+    ``account_ids`` is the authorization scope: it is applied first and cannot be
+    widened by any other argument, so a customer can never see another customer's
+    rows even by guessing a query parameter.
+    """
+    statement = (
+        select(Transaction, Account.label, DetectionResult)
+        .join(Account, Account.id == Transaction.account_id, isouter=True)
+        .join(DetectionResult, DetectionResult.transaction_id == Transaction.id, isouter=True)
+    )
+    counter = select(func.count(func.distinct(Transaction.id))).select_from(Transaction).join(
+        DetectionResult, DetectionResult.transaction_id == Transaction.id, isouter=True
+    )
+
+    filters = [Transaction.account_id.in_(list(account_ids) or [""])]
+    if account_id:
+        filters.append(Transaction.account_id == account_id)
+    if status:
+        filters.append(Transaction.status == status)
+    if direction:
+        filters.append(Transaction.direction == direction)
+    if suspicious is True:
+        filters.append(DetectionResult.decision.is_not(None))
+        filters.append(DetectionResult.decision != "ALLOW")
+    elif suspicious is False:
+        filters.append(or_(DetectionResult.decision.is_(None), DetectionResult.decision == "ALLOW"))
+    if date_from is not None:
+        filters.append(Transaction.timestamp >= date_from)
+    if date_to is not None:
+        filters.append(Transaction.timestamp <= date_to)
+    if search:
+        # One LIKE over the fields a customer can actually see on the row.
+        pattern = f"%{search.strip().lower()}%"
+        filters.append(
+            or_(
+                func.lower(Transaction.id).like(pattern),
+                func.lower(func.coalesce(Transaction.description, "")).like(pattern),
+                func.lower(func.coalesce(Transaction.counterparty_label, "")).like(pattern),
+                func.lower(func.coalesce(Transaction.counterparty_id, "")).like(pattern),
+                func.lower(Transaction.channel).like(pattern),
+                func.lower(Transaction.status).like(pattern),
+            )
+        )
+
+    for condition in filters:
+        statement = statement.where(condition)
+        counter = counter.where(condition)
+
+    total = int(session.execute(counter).scalar() or 0)
+    rows = session.execute(
+        statement.order_by(Transaction.timestamp.desc(), Transaction.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return [(row[0], row[1], row[2]) for row in rows], total
+
+
+def debits_since(session: Session, account_id: str, since) -> int:
+    """Sum of outgoing settled/hold value from one account since ``since``.
+
+    Used for the rolling daily transfer limit. Held and blocked transfers are
+    counted too, because the limit exists to cap what a customer *asks* to move.
+    """
+    return int(
+        session.execute(
+            select(func.coalesce(func.sum(Transaction.amount_minor), 0)).where(
+                Transaction.account_id == account_id,
+                Transaction.direction == "DEBIT",
+                Transaction.timestamp >= since,
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def by_idempotency_key(session: Session, key: str) -> Transaction | None:
+    """The original leg of an already-accepted submission (see ``transfer_id``)."""
+    if not key:
+        return None
+    return session.execute(
+        select(Transaction)
+        .where(Transaction.idempotency_key == key)
+        .order_by(Transaction.timestamp)
+    ).scalars().first()
+
+
+def transfer_legs(session: Session, transfer_id: str) -> list[Transaction]:
+    return list(
+        session.execute(
+            select(Transaction)
+            .where(Transaction.transfer_id == transfer_id)
+            .order_by(Transaction.direction.desc(), Transaction.id)
+        ).scalars()
+    )
+
+
+def last_transaction_at(session: Session, account_ids: list[str]):
+    if not account_ids:
+        return None
+    return session.execute(
+        select(func.max(Transaction.timestamp)).where(Transaction.account_id.in_(account_ids))
+    ).scalar()
+
+
+def decision_counts_for_accounts(session: Session, account_ids: list[str]) -> dict[str, int]:
+    if not account_ids:
+        return {}
+    rows = session.execute(
+        select(DetectionResult.decision, func.count())
+        .where(DetectionResult.account_id.in_(account_ids))
+        .group_by(DetectionResult.decision)
+    ).all()
+    return {str(decision): int(count) for decision, count in rows}
+
+
+def status_counts_by_account(
+    session: Session, account_ids: list[str]
+) -> dict[str, dict[str, int]]:
+    """Settlement-state counts per account, in one grouped query.
+
+    The account cards show these individually, so a bank-wide total would be wrong
+    on every card but one.
+    """
+    if not account_ids:
+        return {}
+    rows = session.execute(
+        select(Transaction.account_id, Transaction.status, func.count())
+        .where(Transaction.account_id.in_(list(account_ids)))
+        .group_by(Transaction.account_id, Transaction.status)
+    ).all()
+    counts: dict[str, dict[str, int]] = {}
+    for account_id, status, count in rows:
+        counts.setdefault(account_id, {})[str(status)] = int(count)
+    return counts
+
+
+def decision_counts_by_account(
+    session: Session, account_ids: list[str]
+) -> dict[str, dict[str, int]]:
+    """Detection decision counts per account (the ``suspicious`` figure on a card)."""
+    if not account_ids:
+        return {}
+    rows = session.execute(
+        select(DetectionResult.account_id, DetectionResult.decision, func.count())
+        .where(DetectionResult.account_id.in_(list(account_ids)))
+        .group_by(DetectionResult.account_id, DetectionResult.decision)
+    ).all()
+    counts: dict[str, dict[str, int]] = {}
+    for account_id, decision, count in rows:
+        counts.setdefault(account_id, {})[str(decision)] = int(count)
+    return counts
+
+
+def pending_outgoing_total(session: Session, account_ids: list[str]) -> int:
+    """Outgoing value awaiting a decision.
+
+    Money in this state has been *asked for* but not deducted, so the balance
+    summary reports it separately rather than blending it into one figure.
+    """
+    if not account_ids:
+        return 0
+    return int(
+        session.execute(
+            select(func.coalesce(func.sum(Transaction.amount_minor), 0)).where(
+                Transaction.account_id.in_(list(account_ids)),
+                Transaction.direction != "CREDIT",
+                Transaction.status == "PENDING_REVIEW",
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def suspicious_for_accounts(session: Session, account_ids: list[str], limit: int = 10):
+    """Most recent non-ALLOW detections on the customer's own accounts."""
+    if not account_ids:
+        return []
+    return session.execute(
+        select(Transaction, DetectionResult, Account.label)
+        .join(DetectionResult, DetectionResult.transaction_id == Transaction.id)
+        .join(Account, Account.id == Transaction.account_id, isouter=True)
+        .where(
+            Transaction.account_id.in_(account_ids),
+            DetectionResult.decision != "ALLOW",
+        )
+        .order_by(Transaction.timestamp.desc())
+        .limit(limit)
+    ).all()

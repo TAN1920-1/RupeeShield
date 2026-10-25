@@ -36,9 +36,18 @@ def optional_choice(value: str | None, allowed: Iterable[str], field: str) -> st
     return validate_choice(value, allowed, field)
 
 
-def page_params(limit: int | None, offset: int | None) -> tuple[int, int]:
-    """Clamp pagination so a client cannot ask for the whole database at once."""
-    resolved_limit = settings.max_page_size if limit is None else int(limit)
+def page_params(
+    limit: int | None, offset: int | None, *, default_limit: int | None = None
+) -> tuple[int, int]:
+    """Clamp pagination so a client cannot ask for the whole database at once.
+
+    ``default_limit`` lets a panel that shows a short list (a notification feed, a
+    security-event list) default to a sensible page rather than to the maximum.
+    """
+    fallback = settings.max_page_size if default_limit is None else min(
+        int(default_limit), settings.max_page_size
+    )
+    resolved_limit = fallback if limit is None else int(limit)
     resolved_offset = 0 if offset is None else int(offset)
     if resolved_limit < 1:
         raise ValidationError("limit must be >= 1.")

@@ -1,9 +1,10 @@
 """FastAPI application entry point for RupeeShield.
 
-Startup does three things and nothing else: configure logging, create any missing
-SQLite tables, and register the routers. Model artefacts are loaded lazily by the
-detection service on first use, so the app boots (and ``/api/health`` answers) even
-before ``python -m app.ml.train`` has been run.
+Startup does four things and nothing else: configure logging, create any missing
+SQLite tables, make sure the two published demo logins exist, and register the
+routers. Model artefacts are loaded lazily by the detection service on first use,
+so the app boots (and ``/api/health`` answers) even before ``python -m app.ml.train``
+has been run.
 
 Run:
     uvicorn app.main:app --reload --port 8000
@@ -22,9 +23,26 @@ from app.api.errors import register_exception_handlers
 from app.api.routes.score import router as score_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
-from app.db.session import dispose_engine, init_db
+from app.db.session import SessionLocal, dispose_engine, init_db
+from app.services import auth
 
 logger = get_logger(__name__)
+
+
+def _prepare_demo_logins() -> None:
+    """Create the documented demo users when they are missing. Idempotent."""
+    if not settings.demo_mode_enabled:
+        return
+    session = SessionLocal()
+    try:
+        created = auth.ensure_demo_users(session)
+        if created:
+            logger.info("Seeded %d demo user(s) for local sign-in.", len(created))
+    except Exception:  # pragma: no cover - startup must not be blocked by demo data
+        session.rollback()
+        logger.warning("Could not prepare demo logins; sign-in will need the seeder.", exc_info=True)
+    finally:
+        session.close()
 
 
 @asynccontextmanager
@@ -32,6 +50,7 @@ async def lifespan(_app: FastAPI):
     """Prepare shared resources once per process and release them on shutdown."""
     configure_logging()
     init_db()
+    _prepare_demo_logins()
     logger.info(
         "%s %s starting (env=%s, database=%s)",
         settings.app_name,

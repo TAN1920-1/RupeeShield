@@ -468,3 +468,286 @@ export interface DocumentationPayload {
   troubleshooting: { problem: string; resolution: string }[];
   commands: { label: string; command: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// Authentication (app/schemas/auth.py)
+// ---------------------------------------------------------------------------
+
+export type UserRole = 'CUSTOMER' | 'ANALYST';
+
+export interface CustomerProfile {
+  phone_masked: string;
+  city: string;
+  kyc_status: string;
+}
+
+export interface SessionUser {
+  id: string;
+  email: string;
+  full_name: string;
+  role: UserRole;
+  is_demo: boolean;
+  last_login_at: string | null;
+  profile: CustomerProfile;
+  account_ids: string[];
+  account_count: number;
+}
+
+/** Returned once, by `POST /api/auth/login`. The token is never echoed again. */
+export interface SessionIssued {
+  token: string;
+  issued_at: string;
+  expires_at: string;
+  user: SessionUser;
+}
+
+export interface SessionStatus {
+  issued_at: string;
+  expires_at: string;
+  user: SessionUser;
+}
+
+export interface DemoCredential {
+  role: UserRole;
+  label: string;
+  email: string;
+  password: string;
+  description: string;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (app/schemas/notification.py)
+// ---------------------------------------------------------------------------
+
+export interface NotificationItem {
+  id: string;
+  kind: string;
+  severity: Severity;
+  title: string;
+  body: string;
+  entity_type: string;
+  entity_id: string | null;
+  created_at: string;
+  read: boolean;
+  read_at: string | null;
+}
+
+export interface NotificationFeed extends Paginated<NotificationItem> {
+  unread: number;
+}
+
+// ---------------------------------------------------------------------------
+// Customer banking (app/schemas/banking.py)
+// ---------------------------------------------------------------------------
+
+export interface BalanceSummary {
+  account_count: number;
+  currency: string;
+  total_balance_minor: number;
+  total_balance: number;
+  held_minor: number;
+  held: number;
+  available_minor: number;
+  available: number;
+}
+
+export interface AccountCard {
+  id: string;
+  label: string;
+  masked_number: string;
+  account_type: string;
+  currency: string;
+  status: 'ACTIVE' | 'UNDER_REVIEW';
+  status_label: string;
+  balance_minor: number;
+  balance: number;
+  opening_balance_minor: number;
+  home_country: string;
+  preferred_channel: string;
+  account_age_days: number;
+  risk_status: string;
+  transaction_count: number;
+  suspicious_count: number;
+  pending_count: number;
+  last_activity_at: string | null;
+  is_synthetic: boolean;
+  is_primary: boolean;
+}
+
+export interface AccountList {
+  items: AccountCard[];
+  summary: BalanceSummary;
+  total: number;
+  limit: number;
+  offset: number;
+  returned: number;
+}
+
+export interface CustomerTransaction {
+  id: string;
+  timestamp: string;
+  description: string;
+  direction: 'DEBIT' | 'CREDIT';
+  sender: string | null;
+  recipient: string | null;
+  counterparty_id: string | null;
+  counterparty_label: string | null;
+  account_id: string;
+  account_label: string | null;
+  account_masked_number: string;
+  amount_minor: number;
+  amount: number;
+  signed_amount_minor: number;
+  signed_amount: number;
+  currency: string;
+  channel: string;
+  status: string;
+  status_label: string;
+  decision: Decision | null;
+  risk_score: number | null;
+  risk_level: string | null;
+  suspicious: boolean;
+  detection_id: string | null;
+  incident_id: string | null;
+  is_fraud: number | null;
+}
+
+export interface CustomerIncident {
+  id: string;
+  title: string;
+  status: string;
+  severity: Severity;
+  risk_level: string;
+  scenario: ScenarioKey | null;
+  scenario_name: string;
+  primary_account_id: string;
+  primary_account_label: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  event_count: number;
+  transaction_count: number;
+  suspected_loss_minor: number;
+  suspected_loss: number;
+}
+
+export interface CustomerTransactionDetail extends CustomerTransaction {
+  detection: Record<string, unknown> | null;
+  explanation: ShapFeature[];
+  security_events: Record<string, unknown>[];
+  incident: CustomerIncident | null;
+  related: Record<string, unknown>[];
+}
+
+export interface TransferLeg {
+  account_id: string;
+  label: string;
+  direction: 'DEBIT' | 'CREDIT';
+  amount_minor: number;
+  amount: number;
+  balance_minor: number;
+  balance: number;
+  masked_number: string;
+}
+
+export interface TransferResult {
+  transfer_id: string;
+  status: string;
+  status_label: string;
+  decision: Decision;
+  risk_score: number;
+  reasons: string[];
+  rules_triggered: string[];
+  message: string;
+  duplicate: boolean;
+  settled: boolean;
+  amount_minor: number;
+  amount: number;
+  currency: string;
+  description: string;
+  created_at: string;
+  source: TransferLeg;
+  recipient: TransferLeg;
+  transactions: CustomerTransaction[];
+  notification_id: string | null;
+}
+
+export interface Payee {
+  id: string;
+  label: string;
+  masked_number: string;
+  account_type: string;
+  currency: string;
+}
+
+export interface SecurityFactor {
+  key: string;
+  label: string;
+  value: number;
+  tone: 'GOOD' | 'ATTENTION' | 'DANGER';
+  detail: string;
+}
+
+export interface SecurityStatus {
+  level: 'GOOD' | 'ATTENTION' | 'ELEVATED';
+  label: string;
+  summary: string;
+}
+
+export interface SignInEvent {
+  id: string;
+  timestamp: string;
+  event_type: string;
+  description: string;
+  severity: Severity;
+  device_id: string | null;
+  country: string | null;
+  source_ip_hash: string | null;
+}
+
+export interface KnownDevice {
+  device_id: string;
+  country: string | null;
+  last_seen: string | null;
+  recognised: boolean;
+  detail: string;
+}
+
+export interface SecurityCentre {
+  status: SecurityStatus;
+  factors: SecurityFactor[];
+  recent_sign_ins: SignInEvent[];
+  failed_sign_ins: SignInEvent[];
+  devices: KnownDevice[];
+  suspicious_transactions: CustomerTransaction[];
+  open_incidents: CustomerIncident[];
+  security_events: SignInEvent[];
+  generated_at: string;
+}
+
+export interface SimulatedLogin {
+  message: string;
+  event: SignInEvent;
+  device_id: string;
+  country: string;
+  notification_id: string | null;
+}
+
+export interface TransferRequest {
+  source_account_id: string;
+  recipient_account_id: string;
+  amount: string;
+  description: string;
+  idempotency_key: string | null;
+}
+
+export interface TransactionFilters {
+  account_id?: string;
+  search?: string;
+  status?: string;
+  direction?: string;
+  suspicious?: boolean;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+  offset?: number;
+}

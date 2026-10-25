@@ -168,11 +168,15 @@ def build_documentation() -> dict:
             "body": (
                 "This is a simulation. It contains no offensive capability, targets nothing outside "
                 "its own database, and stores no real personal or financial data. It must not be "
-                "presented as a production-grade banking security system: it has no authentication, "
-                "no multi-tenant isolation and no hardened deployment."
+                "presented as a production-grade banking security system: it ships a local "
+                "authentication and two-role model, but that is a teaching login rather than a "
+                "hardened deployment, and there is no multi-tenant isolation."
             ),
             "bullets": [
                 "No real bank, payment network or third-party endpoint is contacted at any point.",
+                "Balances and transfers are rows in a local database; no real money moves.",
+                "Passwords are stored only as salted PBKDF2 hashes, and session tokens only as "
+                "SHA-256 digests; the two roles are enforced by the server on every request.",
                 "No arbitrary command execution: the only shell commands in the project are the ones "
                 "a developer runs by hand.",
                 "No secrets are required, so nothing secret can leak through configuration.",

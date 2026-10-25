@@ -203,3 +203,41 @@ def status_counts(session: Session) -> dict[str, int]:
         select(Incident.status, func.count()).group_by(Incident.status)
     ).all()
     return {str(status): int(count) for status, count in rows}
+
+
+# ---------------------------------------------------------------------------
+# Customer-scoped reads
+# ---------------------------------------------------------------------------
+def incidents_for_accounts(
+    session: Session, account_ids: list[str], *, limit: int = 20, status: str | None = None
+) -> list[tuple[Incident, str | None]]:
+    """Incidents raised on any of the customer's own accounts."""
+    if not account_ids:
+        return []
+    statement = (
+        select(Incident, Account.label)
+        .join(Account, Account.id == Incident.primary_account_id, isouter=True)
+        .where(Incident.primary_account_id.in_(list(account_ids)))
+    )
+    if status:
+        statement = statement.where(Incident.status == status)
+    rows = session.execute(
+        statement.order_by(Incident.opened_at.desc(), Incident.id).limit(limit)
+    ).all()
+    return [(row[0], row[1]) for row in rows]
+
+
+def open_incident_counts(session: Session, account_ids: list[str]) -> int:
+    if not account_ids:
+        return 0
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(Incident)
+            .where(
+                Incident.primary_account_id.in_(list(account_ids)),
+                Incident.status != "CLOSED",
+            )
+        ).scalar()
+        or 0
+    )

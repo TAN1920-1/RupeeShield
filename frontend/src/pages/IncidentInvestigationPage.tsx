@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react';
 
 import { api } from '../api/client';
 import type { Incident, IncidentDetail, Replay, ReplayStep } from '../api/types';
+import { IncidentTimeline } from '../components/IncidentTimeline';
 import {
   Badge,
   Button,
@@ -437,28 +438,7 @@ export function IncidentInvestigationPage() {
 
               <div className="stack">
                 <h3>Timeline</h3>
-                {detailData.timeline.length === 0 ? (
-                  <Notice>No timeline entries are recorded for this incident.</Notice>
-                ) : (
-                  <div className="timeline">
-                    {detailData.timeline.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className={`timeline__item timeline__item--${entry.kind}`}
-                      >
-                        <div className="timeline__meta">
-                          <span>{formatDateTime(entry.timestamp)}</span>
-                          <span>{entry.kind}</span>
-                          {entry.ref_id && <span className="mono">{entry.ref_id}</span>}
-                        </div>
-                        <div>{entry.description}</div>
-                        {Object.keys(entry.payload).length > 0 && (
-                          <pre className="code">{JSON.stringify(entry.payload, null, 2).slice(0, 800)}</pre>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <IncidentTimeline entries={detailData.timeline} />
               </div>
 
               <div className="stack">

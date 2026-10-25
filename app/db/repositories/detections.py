@@ -21,6 +21,16 @@ def add_security_event(session: Session, row: dict) -> SecurityEvent:
     return event
 
 
+def security_event_by_id(session: Session, event_id: str) -> SecurityEvent | None:
+    """One security event by primary key, for callers that just wrote it.
+
+    Needed because "the most recent event for this account" is not the same thing
+    as "the event I created": simulated scenario telemetry on the same account can
+    carry a later timestamp.
+    """
+    return session.get(SecurityEvent, event_id)
+
+
 def detection_for_transaction(session: Session, transaction_id: str) -> DetectionResult | None:
     return session.execute(
         select(DetectionResult)
@@ -175,3 +185,69 @@ def rules_for_incident(session: Session, incident_id: str) -> list[str]:
     for detection in detections_for_incident(session, incident_id):
         codes.update(detection.rules_triggered or [])
     return sorted(codes)
+
+
+def security_events_for_accounts(
+    session: Session, account_ids: list[str], *, limit: int = 40, event_types: list[str] | None = None
+) -> list[SecurityEvent]:
+    """Recent security telemetry across the customer's own accounts."""
+    if not account_ids:
+        return []
+    statement = select(SecurityEvent).where(SecurityEvent.account_id.in_(list(account_ids)))
+    if event_types:
+        statement = statement.where(SecurityEvent.event_type.in_(list(event_types)))
+    return list(
+        session.execute(
+            statement.order_by(SecurityEvent.timestamp.desc(), SecurityEvent.id.desc()).limit(limit)
+        ).scalars()
+    )
+
+
+def count_events_for_accounts(
+    session: Session, account_ids: list[str], event_types: list[str] | None = None
+) -> int:
+    if not account_ids:
+        return 0
+    statement = (
+        select(func.count())
+        .select_from(SecurityEvent)
+        .where(SecurityEvent.account_id.in_(list(account_ids)))
+    )
+    if event_types:
+        statement = statement.where(SecurityEvent.event_type.in_(list(event_types)))
+    return int(session.execute(statement).scalar() or 0)
+
+
+def known_devices(session: Session, account_ids: list[str]) -> list[tuple[str, str | None, str | None]]:
+    """Distinct ``(device_id, country, last_seen)`` seen on the customer's accounts.
+
+    Derived from recorded telemetry rather than from a hand-written device list,
+    so a device only appears here because an event actually mentioned it.
+    """
+    if not account_ids:
+        return []
+    rows = session.execute(
+        select(
+            SecurityEvent.device_id,
+            func.max(SecurityEvent.country),
+            func.max(SecurityEvent.timestamp),
+        )
+        .where(
+            SecurityEvent.account_id.in_(list(account_ids)),
+            SecurityEvent.device_id.is_not(None),
+        )
+        .group_by(SecurityEvent.device_id)
+    ).all()
+    return [(str(device), country, seen_at) for device, country, seen_at in rows]
+
+
+def latest_events_for_accounts(session: Session, account_ids: list[str], limit: int = 8):
+    if not account_ids:
+        return []
+    return session.execute(
+        select(SecurityEvent, Account.label)
+        .join(Account, Account.id == SecurityEvent.account_id, isouter=True)
+        .where(SecurityEvent.account_id.in_(list(account_ids)))
+        .order_by(SecurityEvent.timestamp.desc())
+        .limit(limit)
+    ).all()

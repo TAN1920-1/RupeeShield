@@ -24,8 +24,10 @@ os.environ.setdefault("RUPESHIELD_ENVIRONMENT", "test")
 import pytest  # noqa: E402  (must follow the environment setup above)
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.core.config import settings  # noqa: E402
 from app.db.session import SessionLocal, init_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app.security.ratelimit import rate_limiter  # noqa: E402
 from app.services.settings_service import reset_overrides  # noqa: E402
 
 #: Scenario used by the shared fixtures. ACCOUNT_TAKEOVER produces both security
@@ -36,9 +38,56 @@ SHARED_SEED = 4242
 SHARED_EVENTS = 60
 
 
+def _sign_in(test_client: TestClient, email: str, password: str) -> str:
+    """Authenticate against the real endpoint and return the opaque session token."""
+    response = test_client.post(
+        "/api/auth/login",
+        json={"email": email, "password": password, "device_id": "D-TEST-RUNNER"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["token"]
+
+
+def _authenticated_client(email: str, password: str) -> TestClient:
+    """A ``TestClient`` holding a freshly issued session for ``email``."""
+    test_client = TestClient(app)
+    test_client.__enter__()
+    test_client.headers.update(
+        {"Authorization": f"Session {_sign_in(test_client, email, password)}"}
+    )
+    return test_client
+
+
 @pytest.fixture(scope="session")
 def client():
-    """A ``TestClient`` bound to the app, with startup/shutdown lifespan events."""
+    """A ``TestClient`` signed in as the demo **analyst**.
+
+    The security-operations endpoints are ANALYST-only, and that check happens on the
+    server, so the HTTP suite authenticates for real rather than being handed a
+    bypass. Tests that need no session or a customer session ask for
+    ``anonymous_client`` / ``customer_client`` instead.
+    """
+    with TestClient(app) as test_client:
+        token = _sign_in(
+            test_client, settings.demo_analyst_email, settings.demo_analyst_password
+        )
+        test_client.headers.update({"Authorization": f"Session {token}"})
+        yield test_client
+
+
+@pytest.fixture(scope="session")
+def customer_client():
+    """A ``TestClient`` signed in as the demo **customer** (Priya Sharma)."""
+    test_client = _authenticated_client(
+        settings.demo_customer_email, settings.demo_customer_password
+    )
+    yield test_client
+    test_client.__exit__(None, None, None)
+
+
+@pytest.fixture(scope="session")
+def anonymous_client():
+    """A ``TestClient`` with no session at all, for the 401 / sign-in tests."""
     with TestClient(app) as test_client:
         yield test_client
 
@@ -82,3 +131,10 @@ def _restore_thresholds():
     """Undo any settings mutation and remove the persisted overlay after each test."""
     yield
     reset_overrides()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Clear the process-wide sliding window so the suite is order-independent."""
+    rate_limiter.reset()
+    yield
