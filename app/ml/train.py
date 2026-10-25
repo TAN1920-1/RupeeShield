@@ -235,8 +235,18 @@ def main(argv: list[str] | None = None) -> int:
 
     feature_table = clean_feature_frame(build_feature_table(raw))
     args.features_out.parent.mkdir(parents=True, exist_ok=True)
-    feature_table.to_parquet(args.features_out, index=False)
-    logger.info("Feature table -> %s %s", args.features_out, feature_table.shape)
+    # Convenience dump only -- nothing downstream reads this file back. Parquet needs
+    # an optional engine (pyarrow/fastparquet), so skip the dump rather than abort
+    # training when neither is installed (e.g. a minimal CI environment).
+    try:
+        feature_table.to_parquet(args.features_out, index=False)
+        logger.info("Feature table -> %s %s", args.features_out, feature_table.shape)
+    except ImportError:
+        logger.info(
+            "Feature table not dumped to %s (no parquet engine installed); "
+            "training continues.",
+            args.features_out,
+        )
 
     train_frame, test_frame = temporal_split(feature_table, args.test_fraction)
     logger.info(
